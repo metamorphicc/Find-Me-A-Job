@@ -35,3 +35,12 @@ class Vacancy:
         value["work_formats"] = list(self.work_formats)
         value["is_remote"] = self.is_remote()
         return value
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> Vacancy:
+        return cls(
+            **{
+                field: tuple(value[field]) if field == "work_formats" else value[field]
+                for field in cls.__dataclass_fields__
+            }
+        )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass as dc
 from pathlib import Path
@@ -31,11 +32,20 @@ class HhConfig:
 
 
 @dc(frozen=True, slots=True)
+class TelegramConfig:
+    bot_token: str
+    allowed_user_ids: tuple[int, ...]
+    page_size: int
+
+
+@dc(frozen=True, slots=True)
 class AppConfig:
     search: SearchConfig
     hh: HhConfig
     database_path: Path
     reports_dir: Path
+    telegram: TelegramConfig
+    profile_path: Path
 
 
 def _strings(value: Any, field: str) -> tuple[str, ...]:
@@ -67,8 +77,11 @@ def load_config(path: str | Path) -> AppConfig:
     search_raw = raw.get("search", {})
     hh_raw = raw.get("hh", {})
     storage_raw = raw.get("storage", {})
-    if not all(isinstance(value, dict) for value in (search_raw, hh_raw, storage_raw)):
-        raise ConfigError("search, hh, and storage must be TOML tables")
+    telegram_raw = raw.get("telegram", {})
+    if not all(
+        isinstance(value, dict) for value in (search_raw, hh_raw, storage_raw, telegram_raw)
+    ):
+        raise ConfigError("search, hh, storage, and telegram must be TOML tables")
 
     queries = _strings(search_raw.get("queries"), "search.queries")
     if not queries:
@@ -77,6 +90,12 @@ def load_config(path: str | Path) -> AppConfig:
     root = config_path.resolve().parent
     database_path = root / str(storage_raw.get("database", "data/jobs.db"))
     reports_dir = root / str(storage_raw.get("reports_dir", "reports"))
+    allowed_ids = telegram_raw.get("allowed_user_ids", [])
+    if not isinstance(allowed_ids, list) or any(
+        not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0
+        for user_id in allowed_ids
+    ):
+        raise ConfigError("telegram.allowed_user_ids must be a list of positive numbers")
 
     return AppConfig(
         search=SearchConfig(
@@ -101,4 +120,12 @@ def load_config(path: str | Path) -> AppConfig:
         ),
         database_path=database_path,
         reports_dir=reports_dir,
+        telegram=TelegramConfig(
+            bot_token=(
+                os.environ.get("TELEGRAM_BOT_TOKEN") or str(telegram_raw.get("bot_token", ""))
+            ).strip(),
+            allowed_user_ids=tuple(allowed_ids),
+            page_size=_bounded_int(telegram_raw.get("page_size", 5), "telegram.page_size", 1, 10),
+        ),
+        profile_path=root / str(telegram_raw.get("profile", "profile.json")),
     )

@@ -98,3 +98,14 @@ class VacancyStore:
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def recent_vacancies(self, limit: int = 5, offset: int = 0) -> list[Vacancy]:
+        rows = self.connection.execute(
+            "SELECT payload_json FROM vacancies ORDER BY first_seen DESC, source_id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        return [Vacancy.from_dict(json.loads(row["payload_json"])) for row in rows]
+
+    def count(self) -> int:
+        row = self.connection.execute("SELECT COUNT(*) FROM vacancies").fetchone()
+        return int(row[0])

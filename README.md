@@ -49,3 +49,14 @@ To inspect the most recently stored vacancies:
 ```
 
 The application only discovers vacancies at this stage. It does not log in to HeadHunter or submit applications.
+
+## Telegram bot
+
+The bot runs on your computer and searches when you press **🔎 Искать вакансии**. It sends new vacancies in batches, each with the original link and a filled reply text. If nothing new appears, it offers **📚 Ранее найденные**. The same link and reply text are available for vacancies in history. The bot does not send applications to employers.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather). Copy its token into the ignored `config.toml` under `[telegram]` as `bot_token`, or set `TELEGRAM_BOT_TOKEN` in your environment. Do not put the token in `config.example.toml`.
+2. Copy `profile.example.json` to `profile.json` and replace the three required fields: `name`, `about`, and `contact`. Optional `skills`, `resume_url`, and `portfolio_url` are included only when provided. The Windows launcher creates the local file for you if it is missing. `profile.json` is ignored by Git. The bot uses only these facts; it does not invent experience or tailor claims to a vacancy.
+3. Start the bot with `run-telegram-bot.cmd` or `.\.venv\Scripts\job-search.exe bot`. The Windows launcher also checks the required Chromium installation. Keep the bot running while you use it.
+4. Open the bot in Telegram and send `/id`. Put the returned number in `allowed_user_ids` in the ignored `config.toml`, for example `allowed_user_ids = [123456789]`. Restart the bot, send `/start`, then use the two buttons.
+
+The Telegram token and candidate profile stay in local ignored files, but the filled reply text is sent to your private Telegram chat when you request vacancies. Only allowed numeric user IDs can search or read history. The bot accepts private chats only. Search settings remain in `[search]` in `config.toml`, including `remote_only` and `strict_remote`.

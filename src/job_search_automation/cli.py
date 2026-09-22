@@ -10,27 +10,23 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from job_search_automation.config import ConfigError, load_config
-from job_search_automation.filters import rejection_reason
-from job_search_automation.hh import HhApiError, HhClient
+from job_search_automation.hh import HhApiError
 from job_search_automation.reporting import write_report
+from job_search_automation.search import scan_vacancies
 from job_search_automation.storage import VacancyStore
+from job_search_automation.telegram_bot import TelegramApiError, run_bot
 
 
 def _scan(config_path: Path, *, open_report: bool) -> int:
     config = load_config(config_path)
-    client = HhClient(config.hh)
-    fetched = client.search(config.search)
-    accepted = [item for item in fetched if rejection_reason(item, config.search) is None]
-
-    with VacancyStore(config.database_path) as store:
-        new_items = store.save(accepted)
+    result = scan_vacancies(config)
 
     markdown, data, report_html = write_report(
         config.reports_dir,
-        new_items,
-        fetched_count=len(fetched),
-        rejected_count=len(fetched) - len(accepted),
-        transport=client.last_transport,
+        result.new_items,
+        fetched_count=result.fetched_count,
+        rejected_count=result.fetched_count - result.accepted_count,
+        transport=result.transport,
         assets_root=config_path.resolve().parent,
     )
     if open_report:
@@ -38,10 +34,10 @@ def _scan(config_path: Path, *, open_report: bool) -> int:
     print(
         json.dumps(
             {
-                "fetched": len(fetched),
-                "accepted": len(accepted),
-                "new": len(new_items),
-                "transport": client.last_transport,
+                "fetched": result.fetched_count,
+                "accepted": result.accepted_count,
+                "new": len(result.new_items),
+                "transport": result.transport,
                 "report": str(markdown),
                 "report_html": str(report_html),
                 "data": str(data),
@@ -87,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor", help="Check configuration and local Chromium")
     list_parser = commands.add_parser("list", help="Show recently discovered vacancies")
     list_parser.add_argument("--limit", type=int, default=20)
+    commands.add_parser("bot", help="Run the private Telegram bot until Ctrl+C")
     return parser
 
 
@@ -102,6 +99,12 @@ def main(argv: list[str] | None = None) -> int:
             return _doctor(args.config)
         if args.command == "list":
             return _list(args.config, args.limit)
+        if args.command == "bot":
+            run_bot(load_config(args.config))
+            return 0
+    except KeyboardInterrupt:
+        print("\nTelegram-бот остановлен.")
+        return 0
     except PlaywrightError:
         print(
             "error: Chromium для Playwright не установлен. Запустите "
@@ -109,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except (ConfigError, HhApiError, OSError) as exc:
+    except (ConfigError, HhApiError, TelegramApiError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2
