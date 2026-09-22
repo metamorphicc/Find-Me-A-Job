@@ -1,0 +1,46 @@
+/* Hallmark · tokens · theme: Newsprint · paper: light · display: roman-serif · accent: cool */
+:root {
+  --color-paper: oklch(96% 0.012 88);
+  --color-paper-2: oklch(92% 0.016 88);
+  --color-paper-3: oklch(88% 0.02 88);
+  --color-ink: oklch(22% 0.018 255);
+  --color-ink-muted: oklch(43% 0.026 255);
+  --color-rule: oklch(72% 0.022 88);
+  --color-accent: oklch(47% 0.15 257);
+  --color-accent-strong: oklch(36% 0.16 257);
+  --color-accent-ink: oklch(98% 0.008 88);
+  --color-focus: oklch(50% 0.18 257);
+  --color-error: oklch(48% 0.17 28);
+  --color-success: oklch(43% 0.11 151);
+
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: "Segoe UI", Arial, sans-serif;
+  --font-label: Consolas, "Courier New", monospace;
+
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4rem;
+  --space-4xl: 6rem;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.5rem;
+  --text-display: clamp(3rem, 8vw, 6.75rem);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-base: 220ms;
+  --rule-thin: 1px;
+  --rule-double: 3px;
+  --radius-control: 0.25rem;
+}

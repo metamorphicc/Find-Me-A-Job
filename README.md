@@ -22,11 +22,25 @@ notepad .\config.toml
 .\.venv\Scripts\job-search.exe scan
 ```
 
+On Windows, double-click `run-search.cmd` to scan and open the generated HTML report. The script creates a local `config.toml` from the example if it is missing.
+
 Edit `search.queries` in `config.toml` for the roles you need. The included starter configuration searches across Russia but accepts only vacancies explicitly marked as fully remote. Employer areas such as Moscow are allowed because no trip to the office is required.
 
 HeadHunter asks API clients to identify themselves. Set `hh.user_agent` to `JobSearchAutomation/0.1 (YOUR_EMAIL)` in the ignored local `config.toml`. The address is sent only as an HTTP client contact to HeadHunter and is not stored in Git.
 
 Each scan writes new matches to a timestamped Markdown report under `reports/` and stores all accepted vacancy IDs in `data/jobs.db`. Later scans omit already-seen vacancies from the new-results report.
+
+The same scan also creates an HTML report. To open it automatically from the command line:
+
+```powershell
+.\.venv\Scripts\job-search.exe scan --open
+```
+
+To verify the local configuration and Chromium installation without contacting a vacancy source:
+
+```powershell
+.\.venv\Scripts\job-search.exe doctor
+```
 
 To inspect the most recently stored vacancies:
 
