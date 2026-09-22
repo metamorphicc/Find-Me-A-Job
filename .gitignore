@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Local secrets and candidate data
+.env
+profile.json
+APPLICATIONS_LEDGER.md
+resumes/
+
+# Browser and review output
+artifacts/
+screenshots/
+browser-profiles/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
