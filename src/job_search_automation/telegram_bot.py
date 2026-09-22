@@ -90,23 +90,27 @@ def _shorten(text: str, limit: int) -> str:
     return compact if len(compact) <= limit else f"{compact[: limit - 1].rstrip()}…"
 
 
-def vacancy_message(vacancy: Vacancy, profile: CandidateProfile, index: int, total: int) -> str:
+def vacancy_message(
+    vacancy: Vacancy, profile: CandidateProfile | None, index: int, total: int
+) -> str:
     title = html.escape(vacancy.title)
     company = html.escape(vacancy.company)
     area = html.escape(vacancy.area)
     summary = html.escape(_shorten(vacancy.summary, 320))
     url = html.escape(vacancy.url, quote=True)
-    application = html.escape(profile.application_text(vacancy))
-    return (
+    message = (
         f"<b>{index}/{total} · {title}</b>\n"
         f"{company} · {area}\n"
         f"Удалённо · Опыт: {html.escape(vacancy.experience)} · "
         f"Зарплата: {html.escape(_salary(vacancy))}\n"
         f"{summary or 'Краткое описание отсутствует.'}\n\n"
         f'<a href="{url}">Открыть вакансию ↗</a>\n'
-        f"{url}\n\n"
-        f"<b>Готовый текст отклика:</b>\n<pre>{application}</pre>"
+        f"{url}"
     )
+    if profile is not None:
+        application = html.escape(profile.application_text(vacancy))
+        message += f"\n\n<b>Готовый текст отклика:</b>\n<pre>{application}</pre>"
+    return message
 
 
 class JobTelegramBot:
@@ -134,11 +138,16 @@ class JobTelegramBot:
             return False
         return True
 
-    def _profile(self, chat_id: int) -> CandidateProfile | None:
+    def _optional_profile(self, chat_id: int) -> CandidateProfile | None:
+        if not self.config.profile_path.is_file():
+            return None
         try:
             return load_profile(self.config.profile_path)
         except ProfileError as exc:
-            self.api.send_message(chat_id, str(exc))
+            self.api.send_message(
+                chat_id,
+                f"Текст отклика пока недоступен: {exc}. Вакансии и ссылки покажу без него.",
+            )
             return None
 
     def handle_update(self, update: dict[str, Any]) -> None:
@@ -163,7 +172,8 @@ class JobTelegramBot:
                 self.api.send_message(
                     chat_id,
                     "Нажмите «Искать вакансии», чтобы проверить новые подходящие позиции. "
-                    "История хранится на этом компьютере.",
+                    "История хранится на этом компьютере. Личный текст отклика можно "
+                    "добавить позже через profile.json — для поиска он не нужен.",
                     reply_markup=MAIN_KEYBOARD,
                 )
             elif text == SEARCH_BUTTON or text.startswith("/scan"):
@@ -199,8 +209,6 @@ class JobTelegramBot:
                 self.show_history(chat_id, int(action[8:]))
 
     def scan(self, chat_id: int) -> None:
-        if self._profile(chat_id) is None:
-            return
         self.api.send_message(chat_id, "Ищу вакансии по настройкам из config.toml…")
         try:
             result = self.scanner(self.config)
@@ -228,9 +236,6 @@ class JobTelegramBot:
         self.show_new(chat_id, 0)
 
     def show_new(self, chat_id: int, page: int) -> None:
-        profile = self._profile(chat_id)
-        if profile is None:
-            return
         items = self.new_items.get(chat_id, [])
         if not items:
             self.api.send_message(chat_id, "Список новых вакансий пуст. Запустите поиск ещё раз.")
@@ -240,6 +245,7 @@ class JobTelegramBot:
         if start >= len(items):
             self.api.send_message(chat_id, "Это последняя страница новых вакансий.")
             return
+        profile = self._optional_profile(chat_id)
         for index, vacancy in enumerate(items[start : start + size], start=start + 1):
             self.api.send_message(
                 chat_id,
@@ -255,9 +261,6 @@ class JobTelegramBot:
         )
 
     def show_history(self, chat_id: int, page: int) -> None:
-        profile = self._profile(chat_id)
-        if profile is None:
-            return
         size = self.config.telegram.page_size
         with VacancyStore(self.config.database_path) as store:
             total = store.count()
@@ -268,6 +271,7 @@ class JobTelegramBot:
                 "История пока пуста." if total == 0 else "Это последняя страница истории.",
             )
             return
+        profile = self._optional_profile(chat_id)
         if page == 0:
             self.api.send_message(chat_id, f"Ранее найденные вакансии: {total}.")
         for index, vacancy in enumerate(vacancies, start=page * size + 1):

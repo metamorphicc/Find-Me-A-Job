@@ -98,16 +98,44 @@ def write_profile(path) -> None:
     )
 
 
-def test_bot_requires_profile_before_search_and_never_calls_scanner(tmp_path) -> None:
+def test_bot_searches_without_profile_and_sends_vacancy_link(tmp_path) -> None:
     settings = config(tmp_path)
     api = FakeApi()
     calls = []
-    bot = JobTelegramBot(settings, api, scanner=lambda _: calls.append(True))
+
+    def scan(_):
+        calls.append(True)
+        with VacancyStore(settings.database_path) as store:
+            new_items = store.save([vacancy()])
+        return ScanResult(new_items, 1, 1, "api")
+
+    bot = JobTelegramBot(settings, api, scanner=scan)
 
     bot.handle_update(message("/scan"))
 
-    assert calls == []
-    assert "profile.example.json" in api.messages[-1][1]
+    assert calls == [True]
+    card = next(text for _, text, _, mode in api.messages if mode)
+    assert "https://hh.ru/vacancy/123" in card
+    assert "Готовый текст отклика" not in card
+
+    bot.handle_update(message("/history"))
+    historical_card = [text for _, text, _, mode in api.messages if mode][-1]
+    assert "https://hh.ru/vacancy/123" in historical_card
+    assert "Готовый текст отклика" not in historical_card
+
+
+def test_invalid_optional_profile_does_not_block_vacancy_history(tmp_path) -> None:
+    settings = config(tmp_path)
+    settings.profile_path.write_text('{"name": ""}', encoding="utf-8")
+    with VacancyStore(settings.database_path) as store:
+        store.save([vacancy()])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(message("/history"))
+
+    assert any("Текст отклика пока недоступен" in text for _, text, _, _ in api.messages)
+    assert any("https://hh.ru/vacancy/123" in text for _, text, _, _ in api.messages)
 
 
 def test_unauthorized_user_cannot_search_or_read_history(tmp_path) -> None:
