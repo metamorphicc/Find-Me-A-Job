@@ -1,0 +1,30 @@
+[search]
+# Replace these broad starter queries with your actual target roles.
+queries = ["стажер", "junior"]
+
+# Russia. Remote vacancies may still list the employer's city as their area.
+area_ids = ["113"]
+
+# Entry-level and up to three years of experience.
+experience_ids = ["noExperience", "between1And3"]
+
+# Accept only jobs that explicitly allow working from home. If a vacancy also
+# lists office, hybrid, or field work, strict_remote rejects it.
+remote_only = true
+strict_remote = true
+
+days = 7
+per_query = 50
+excluded_keywords = ["релокация", "переезд", "вахта"]
+
+[hh]
+base_url = "https://api.hh.ru"
+# HeadHunter asks API clients to include an application name and contact.
+# You can replace this with: JobSearchAutomation/0.1 (YOUR_EMAIL)
+user_agent = "JobSearchAutomation/0.1"
+timeout_seconds = 20
+browser_fallback = true
+
+[storage]
+database = "data/jobs.db"
+reports_dir = "reports"
