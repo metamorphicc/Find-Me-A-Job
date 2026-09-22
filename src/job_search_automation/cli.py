@@ -6,6 +6,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from job_search_automation.config import ConfigError, load_config
@@ -101,6 +102,13 @@ def main(argv: list[str] | None = None) -> int:
             return _doctor(args.config)
         if args.command == "list":
             return _list(args.config, args.limit)
+    except PlaywrightError:
+        print(
+            "error: Chromium для Playwright не установлен. Запустите "
+            "'.\\.venv\\Scripts\\python.exe -m playwright install chromium'.",
+            file=sys.stderr,
+        )
+        return 2
     except (ConfigError, HhApiError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
