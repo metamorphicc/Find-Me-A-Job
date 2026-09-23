@@ -5,6 +5,7 @@ import pytest
 from job_search_automation.config import load_config
 from job_search_automation.models import Vacancy
 from job_search_automation.search import SearchError, scan_with_providers
+from job_search_automation.storage import VacancyStore
 
 
 class Provider:
@@ -71,3 +72,13 @@ def test_old_stored_vacancy_loads_new_optional_fields():
     restored = Vacancy.from_dict(payload)
     assert restored.kind == "job"
     assert restored.market == "ru"
+
+
+def test_cross_source_duplicate_is_kept_once_in_history(tmp_path):
+    database = tmp_path / "jobs.db"
+    with VacancyStore(database) as store:
+        assert len(store.save([vacancy("hh")])) == 1
+        assert store.save([vacancy("remotive")]) == []
+        assert store.count() == 1
+        assert store.get_vacancy("remotive", "1") is not None
+        assert [item.source for item in store.recent_vacancies()] == ["hh"]

@@ -13,6 +13,9 @@ class ConfigError(ValueError):
     """Raised when the local search configuration is invalid."""
 
 
+SOURCE_IDS = frozenset({"hh", "superjob", "remotive", "wwr", "fl"})
+
+
 @dc(frozen=True, slots=True)
 class SearchConfig:
     queries: tuple[str, ...]
@@ -24,6 +27,7 @@ class SearchConfig:
     days: int
     per_query: int
     sources: tuple[str, ...] = ("hh",)
+    kinds: tuple[str, ...] = ("job", "freelance")
 
 
 @dc(frozen=True, slots=True)
@@ -70,6 +74,14 @@ def search_settings_path(database_path: Path) -> Path:
     return database_path.parent / "search-settings.json"
 
 
+def _validate_search(search: SearchConfig) -> SearchConfig:
+    if not search.sources or set(search.sources) - SOURCE_IDS:
+        raise ConfigError("search.sources contains no source or an unknown source")
+    if not search.kinds or set(search.kinds) - {"job", "freelance"}:
+        raise ConfigError("search.kinds must include job or freelance")
+    return search
+
+
 def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
     if not path.is_file():
         return base
@@ -86,7 +98,7 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
     strict_remote = raw.get("strict_remote")
     if not isinstance(remote_only, bool) or not isinstance(strict_remote, bool):
         raise ConfigError("Saved remote filters must be true or false")
-    return SearchConfig(
+    return _validate_search(SearchConfig(
         queries=queries,
         excluded_keywords=_strings(raw.get("excluded_keywords"), "saved excluded_keywords"),
         area_ids=_strings(raw.get("area_ids"), "saved area_ids"),
@@ -96,10 +108,12 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         days=_bounded_int(raw.get("days"), "saved days", 1, 30),
         per_query=_bounded_int(raw.get("per_query"), "saved per_query", 1, 500),
         sources=_strings(raw.get("sources", list(base.sources)), "saved sources"),
-    )
+        kinds=_strings(raw.get("kinds", list(base.kinds)), "saved kinds"),
+    ))
 
 
 def save_search_settings(settings: SearchConfig, path: Path) -> None:
+    _validate_search(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(
@@ -155,9 +169,9 @@ def load_config(path: str | Path) -> AppConfig:
         days=_bounded_int(search_raw.get("days", 7), "search.days", 1, 30),
         per_query=_bounded_int(search_raw.get("per_query", 50), "search.per_query", 1, 500),
         sources=_strings(search_raw.get("sources", ["hh"]), "search.sources"),
+        kinds=_strings(search_raw.get("kinds", ["job", "freelance"]), "search.kinds"),
     )
-    if not search.sources:
-        raise ConfigError("search.sources must contain at least one source")
+    _validate_search(search)
     return AppConfig(
         search=load_search_settings(search, search_settings_path(database_path)),
         hh=HhConfig(

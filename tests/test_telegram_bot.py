@@ -390,3 +390,31 @@ def test_saved_bot_filters_are_loaded_by_cli_config_after_restart(tmp_path) -> N
 
     assert restarted.search.queries == ("Python",)
     assert restarted.search.days == 14
+
+
+def test_bot_can_enable_sources_and_choose_only_freelance(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(callback("choose:sources"))
+    assert "Remotive" in str(api.messages[-1][2])
+    bot.handle_update(callback("toggle:source:remotive"))
+    bot.handle_update(callback("toggle:kind:job"))
+
+    saved = bot._search_settings()
+    assert saved.sources == ("hh", "remotive")
+    assert saved.kinds == ("freelance",)
+
+
+def test_non_hh_opportunity_has_reply_button(tmp_path) -> None:
+    settings = config(tmp_path)
+    write_profile(settings.profile_path)
+    api = FakeApi()
+    item = replace(vacancy(), source="wwr", source_id="abcdef1234", kind="freelance")
+    with VacancyStore(settings.database_path) as store:
+        store.save([item])
+    bot = JobTelegramBot(settings, api)
+    bot.handle_update(message("/history"))
+    card_markup = [markup for _, _, markup, mode in api.messages if mode][-1]
+    assert card_markup["inline_keyboard"][0][0]["callback_data"] == "reply:wwr:abcdef1234"

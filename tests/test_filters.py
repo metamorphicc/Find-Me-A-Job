@@ -49,3 +49,10 @@ def test_rejects_excluded_terms() -> None:
     assert (
         rejection_reason(vacancy("REMOTE", summary="Требуется релокация"), settings()) is not None
     )
+
+
+def test_can_search_only_jobs_or_only_freelance():
+    from dataclasses import replace
+
+    job_only = replace(settings(), kinds=("job",))
+    assert rejection_reason(replace(vacancy("REMOTE"), kind="freelance"), job_only)

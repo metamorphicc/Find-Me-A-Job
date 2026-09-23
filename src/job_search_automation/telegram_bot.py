@@ -71,6 +71,14 @@ PROFILE_LABELS = {
     "city": "Город для анкеты",
 }
 
+SOURCE_LABELS = {
+    "hh": "HeadHunter",
+    "superjob": "SuperJob (нужен ключ)",
+    "remotive": "Remotive",
+    "wwr": "We Work Remotely",
+    "fl": "FL.ru RSS",
+}
+
 
 class TelegramApiError(RuntimeError):
     """Raised when the Telegram Bot API cannot complete a request."""
@@ -241,6 +249,8 @@ class JobTelegramBot:
             chat_id,
             "Фильтры поиска:\n"
             f"Запросы: {', '.join(settings.queries)}\n"
+            f"Источники: {', '.join(settings.sources)}\n"
+            f"Типы: {', '.join(settings.kinds)}\n"
             f"Удалённо: {'да' if settings.remote_only else 'нет'}\n"
             f"Только полностью удалённо: {'да' if settings.strict_remote else 'нет'}\n"
             f"Опыт: {experience}\n"
@@ -251,6 +261,10 @@ class JobTelegramBot:
             reply_markup={
                 "inline_keyboard": [
                     [{"text": "Запросы", "callback_data": "edit:search:queries"}],
+                    [
+                        {"text": "Источники", "callback_data": "choose:sources"},
+                        {"text": "Работа / заказы", "callback_data": "choose:kinds"},
+                    ],
                     [
                         {
                             "text": "Удалённо ✓" if settings.remote_only else "Удалённо ○",
@@ -421,7 +435,29 @@ class JobTelegramBot:
             self.show_search_settings(chat_id)
 
     def _show_choices(self, chat_id: int, choice: str) -> None:
-        if choice == "experience":
+        if choice == "sources":
+            settings = self._search_settings()
+            buttons = [
+                [
+                    {
+                        "text": f"{'✓' if name in settings.sources else '○'} {label}",
+                        "callback_data": f"toggle:source:{name}",
+                    }
+                ]
+                for name, label in SOURCE_LABELS.items()
+            ]
+        elif choice == "kinds":
+            settings = self._search_settings()
+            buttons = [
+                [
+                    {
+                        "text": f"{'✓' if kind in settings.kinds else '○'} {label}",
+                        "callback_data": f"toggle:kind:{kind}",
+                    }
+                ]
+                for kind, label in (("job", "Вакансии"), ("freelance", "Заказы"))
+            ]
+        elif choice == "experience":
             buttons = [
                 [{"text": "Любой опыт", "callback_data": "set:experience:any"}],
                 [{"text": "Без опыта", "callback_data": "set:experience:entry"}],
@@ -460,6 +496,38 @@ class JobTelegramBot:
             elif action == "toggle:strict":
                 enabled = not settings.strict_remote
                 self._save_search_settings(strict_remote=enabled, remote_only=True)
+            elif action.startswith("toggle:source:"):
+                source = action.removeprefix("toggle:source:")
+                if source not in SOURCE_LABELS:
+                    return
+                selected = set(settings.sources)
+                if source in selected:
+                    selected.remove(source)
+                else:
+                    selected.add(source)
+                if not selected:
+                    raise ConfigError("Оставьте хотя бы один источник")
+                self._save_search_settings(
+                    sources=tuple(name for name in SOURCE_LABELS if name in selected)
+                )
+                self._show_choices(chat_id, "sources")
+                return
+            elif action.startswith("toggle:kind:"):
+                kind = action.removeprefix("toggle:kind:")
+                if kind not in {"job", "freelance"}:
+                    return
+                selected = set(settings.kinds)
+                if kind in selected:
+                    selected.remove(kind)
+                else:
+                    selected.add(kind)
+                if not selected:
+                    raise ConfigError("Оставьте хотя бы один тип")
+                self._save_search_settings(
+                    kinds=tuple(name for name in ("job", "freelance") if name in selected)
+                )
+                self._show_choices(chat_id, "kinds")
+                return
             elif action.startswith("set:experience:"):
                 values = {
                     "any": (),
