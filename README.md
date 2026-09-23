@@ -48,7 +48,15 @@ To inspect the most recently stored vacancies:
 .\.venv\Scripts\job-search.exe list --limit 20
 ```
 
-The application only discovers vacancies at this stage. It does not log in to HeadHunter or submit applications.
+The scan command discovers vacancies. It does not log in to HeadHunter or submit applications.
+
+To inspect an employer's Tilda form without filling or submitting it, run:
+
+```powershell
+.\.venv\Scripts\job-search.exe form-probe https://example.com/application
+```
+
+The command reports the form's fields and whether it has a submit control and file upload. If a page has several Tilda forms, pass `--form-index N` after identifying the correct one. The form URL must use public HTTPS.
 
 ## Telegram bot
 
