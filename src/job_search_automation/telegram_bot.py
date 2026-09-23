@@ -604,6 +604,14 @@ class JobTelegramBot:
             elif action.startswith("templates:"):
                 self.pending_edits.pop(chat_id, None)
                 self.show_template(chat_id, action.removeprefix("templates:"))
+            elif action.startswith("reply:"):
+                parts = action.split(":")
+                if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
+                    self.show_reply_choices(chat_id, parts[1], parts[2])
+            elif action.startswith("replypick:"):
+                parts = action.split(":")
+                if len(parts) == 4 and parts[1] == "hh" and parts[2].isdigit():
+                    self.show_reply_with_template(chat_id, parts[1], parts[2], parts[3])
             elif action.startswith("edit:"):
                 parts = action.split(":", 2)
                 if len(parts) == 3:
@@ -641,6 +649,87 @@ class JobTelegramBot:
         )
         self.show_new(chat_id, 0)
 
+    def show_reply_choices(self, chat_id: int, source: str, source_id: str) -> None:
+        if self._optional_profile(chat_id) is None:
+            self.api.send_message(chat_id, "Заполните данные для отклика в настройках.")
+            return
+        with VacancyStore(self.config.database_path) as store:
+            vacancy = store.get_vacancy(source, source_id)
+        if vacancy is None:
+            self.api.send_message(chat_id, "Вакансия не найдена в истории.")
+            return
+        templates = self._optional_templates(chat_id)
+        selected = select_template(vacancy, templates)
+        buttons = [
+            [
+                {
+                    "text": f"{'✓ ' if item.key == selected.key else ''}{item.name}",
+                    "callback_data": f"replypick:{source}:{source_id}:{item.key}",
+                }
+            ]
+            for item in templates
+        ]
+        self.api.send_message(
+            chat_id,
+            f"Шаблон для вакансии «{vacancy.title}». Сейчас выбран: {selected.name}.",
+            reply_markup={"inline_keyboard": buttons},
+        )
+
+    def show_reply_with_template(
+        self, chat_id: int, source: str, source_id: str, template_key: str
+    ) -> None:
+        with VacancyStore(self.config.database_path) as store:
+            vacancy = store.get_vacancy(source, source_id)
+        if vacancy is None:
+            self.api.send_message(chat_id, "Вакансия не найдена в истории.")
+            return
+        profile = self._optional_profile(chat_id)
+        if profile is None:
+            self.api.send_message(chat_id, "Заполните данные для отклика в настройках.")
+            return
+        templates = self._optional_templates(chat_id)
+        template = next((item for item in templates if item.key == template_key), None)
+        if template is None:
+            self.api.send_message(chat_id, "Такой шаблон не найден.")
+            return
+        try:
+            application = html.escape(render_reply(profile, vacancy, template))
+        except TemplateError as exc:
+            self.api.send_message(chat_id, f"Не удалось заполнить шаблон: {exc}")
+            return
+        title = html.escape(vacancy.title)
+        url = html.escape(vacancy.url, quote=True)
+        message = (
+            f"<b>{title}</b> · шаблон «{html.escape(template.name)}»\n"
+            f'<a href="{url}">Открыть вакансию ↗</a>\n{url}\n\n'
+            f"<pre>{application}</pre>"
+        )
+        if len(message) > 4000:
+            self.api.send_message(chat_id, "Отклик слишком длинный; сократите шаблон или профиль.")
+            return
+        self.api.send_message(chat_id, message, html_mode=True)
+
+    def _reply_button(
+        self, vacancy: Vacancy, profile: CandidateProfile | None
+    ) -> dict[str, Any] | None:
+        if (
+            profile is None
+            or vacancy.source != "hh"
+            or not vacancy.source_id.isdigit()
+            or len(vacancy.source_id) > 20
+        ):
+            return None
+        return {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📝 Другой шаблон",
+                        "callback_data": f"reply:hh:{vacancy.source_id}",
+                    }
+                ]
+            ]
+        }
+
     def show_new(self, chat_id: int, page: int) -> None:
         items = self.new_items.get(chat_id, [])
         if not items:
@@ -657,6 +746,7 @@ class JobTelegramBot:
             self.api.send_message(
                 chat_id,
                 vacancy_message(vacancy, profile, index, len(items), templates),
+                reply_markup=self._reply_button(vacancy, profile),
                 html_mode=True,
             )
         buttons: list[dict[str, str]] = []
@@ -684,7 +774,10 @@ class JobTelegramBot:
             self.api.send_message(chat_id, f"Ранее найденные вакансии: {total}.")
         for index, vacancy in enumerate(vacancies, start=page * size + 1):
             self.api.send_message(
-                chat_id, vacancy_message(vacancy, profile, index, total, templates), html_mode=True
+                chat_id,
+                vacancy_message(vacancy, profile, index, total, templates),
+                reply_markup=self._reply_button(vacancy, profile),
+                html_mode=True,
             )
         buttons: list[dict[str, str]] = []
         if page > 0:

@@ -128,6 +128,7 @@ def test_bot_searches_without_profile_and_sends_vacancy_link(tmp_path) -> None:
     card = next(text for _, text, _, mode in api.messages if mode)
     assert "https://hh.ru/vacancy/123" in card
     assert "Готовый текст отклика" not in card
+    assert next(markup for _, _, markup, mode in api.messages if mode) is None
 
     bot.handle_update(message("/history"))
     historical_card = [text for _, text, _, mode in api.messages if mode][-1]
@@ -294,6 +295,17 @@ def test_bot_edits_role_template_and_uses_it_for_new_and_old_vacancies(tmp_path)
     historical_card = [text for _, text, _, mode in api.messages if mode][-1]
     assert "Шаблон: Python" in historical_card
     assert "Здравствуйте, я Иван" in historical_card
+
+    card_markup = [markup for _, _, markup, mode in api.messages if mode][-1]
+    assert card_markup["inline_keyboard"][0][0]["callback_data"] == "reply:hh:123"
+    bot.handle_update(callback("reply:hh:123"))
+    choices = api.messages[-1][2]["inline_keyboard"]
+    assert any(button[0]["callback_data"] == "replypick:hh:123:general" for button in choices)
+    bot.handle_update(callback("replypick:hh:123:general"))
+    alternative = api.messages[-1][1]
+    assert "шаблон «Общий»" in alternative
+    assert "Хочу откликнуться" in alternative
+    assert "https://hh.ru/vacancy/123" in alternative
 
 
 def test_invalid_template_edit_keeps_previous_text(tmp_path) -> None:

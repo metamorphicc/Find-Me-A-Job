@@ -106,6 +106,13 @@ class VacancyStore:
         ).fetchall()
         return [Vacancy.from_dict(json.loads(row["payload_json"])) for row in rows]
 
+    def get_vacancy(self, source: str, source_id: str) -> Vacancy | None:
+        row = self.connection.execute(
+            "SELECT payload_json FROM vacancies WHERE source = ? AND source_id = ?",
+            (source, source_id),
+        ).fetchone()
+        return Vacancy.from_dict(json.loads(row["payload_json"])) if row else None
+
     def count(self) -> int:
         row = self.connection.execute("SELECT COUNT(*) FROM vacancies").fetchone()
         return int(row[0])
