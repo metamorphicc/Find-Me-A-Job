@@ -173,6 +173,7 @@ class JobTelegramBot:
                 "inline_keyboard": [
                     [{"text": "🔎 Фильтры поиска", "callback_data": "settings:search"}],
                     [{"text": "📝 Данные для отклика", "callback_data": "settings:profile"}],
+                    [{"text": "← Назад", "callback_data": "menu:main"}],
                 ]
             },
         )
@@ -485,6 +486,11 @@ class JobTelegramBot:
                 self.show_new(chat_id, int(action[4:]))
             elif action.startswith("history:") and action[8:].isdigit():
                 self.show_history(chat_id, int(action[8:]))
+            elif action == "menu:main":
+                self.pending_edits.pop(chat_id, None)
+                self.api.send_message(
+                    chat_id, "Главное меню: выберите действие.", reply_markup=MAIN_KEYBOARD
+                )
             elif action == "settings":
                 self.pending_edits.pop(chat_id, None)
                 self.show_settings(chat_id)

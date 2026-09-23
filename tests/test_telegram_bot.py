@@ -14,7 +14,7 @@ from job_search_automation.config import (
 from job_search_automation.models import Vacancy
 from job_search_automation.search import ScanResult
 from job_search_automation.storage import VacancyStore
-from job_search_automation.telegram_bot import JobTelegramBot
+from job_search_automation.telegram_bot import MAIN_KEYBOARD, JobTelegramBot
 
 
 def vacancy(source_id: str = "123") -> Vacancy:
@@ -238,6 +238,24 @@ def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:
     assert used_searches[0].experience_ids == ("noExperience",)
     saved = load_search_settings(settings.search, search_settings_path(settings.database_path))
     assert saved == used_searches[0]
+
+
+def test_settings_back_returns_to_main_menu(tmp_path) -> None:
+    api = FakeApi()
+    bot = JobTelegramBot(config(tmp_path), api)
+
+    bot.handle_update(message("/settings"))
+    assert api.messages[-1][2]["inline_keyboard"][-1][0] == {
+        "text": "← Назад",
+        "callback_data": "menu:main",
+    }
+
+    bot.pending_edits[42] = ("search", "queries")
+    bot.handle_update(callback("menu:main"))
+
+    assert bot.pending_edits == {}
+    assert api.messages[-1][2] == MAIN_KEYBOARD
+    assert "Главное меню" in api.messages[-1][1]
 
 
 def test_bot_edits_candidate_profile_and_fills_history_reply(tmp_path) -> None:
