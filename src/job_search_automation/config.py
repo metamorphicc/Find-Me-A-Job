@@ -14,7 +14,7 @@ class ConfigError(ValueError):
     """Raised when the local search configuration is invalid."""
 
 
-SOURCE_IDS = frozenset({"hh", "superjob", "remotive", "wwr", "fl"})
+SOURCE_IDS = frozenset({"hh", "superjob", "remotive", "wwr", "fl", "freelancer"})
 
 
 @dc(frozen=True, slots=True)

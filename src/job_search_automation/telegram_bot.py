@@ -93,6 +93,7 @@ SOURCE_LABELS = {
     "remotive": "Remotive",
     "wwr": "We Work Remotely",
     "fl": "FL.ru RSS",
+    "freelancer": "Freelancer.com",
 }
 
 

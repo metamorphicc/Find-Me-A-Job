@@ -1,6 +1,6 @@
 [search]
 queries = ["Python", "backend", "frontend"]
-sources = ["hh", "remotive", "wwr"]
+sources = ["hh", "remotive", "wwr", "freelancer"]
 kinds = ["job", "freelance"]
 excluded_keywords = []
 area_ids = ["113"]
