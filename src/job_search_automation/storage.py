@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Self
@@ -25,7 +26,36 @@ CREATE TABLE IF NOT EXISTS vacancies (
     PRIMARY KEY (source, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_vacancies_last_seen ON vacancies(last_seen DESC);
+CREATE TABLE IF NOT EXISTS applications (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    form_url TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('inspected', 'review_ready', 'attempted', 'submitted')),
+    review_id TEXT,
+    review_path TEXT,
+    screenshot_path TEXT,
+    submission_path TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source, source_id)
+);
 """
+
+
+class ApplicationStateError(ValueError):
+    """Raised when an application cannot move to the requested state."""
+
+
+@dataclass(frozen=True, slots=True)
+class ApplicationRecord:
+    source: str
+    source_id: str
+    form_url: str
+    status: str
+    review_id: str | None
+    review_path: str | None
+    screenshot_path: str | None
+    submission_path: str | None
+    updated_at: str
 
 
 class VacancyStore:
@@ -116,3 +146,90 @@ class VacancyStore:
     def count(self) -> int:
         row = self.connection.execute("SELECT COUNT(*) FROM vacancies").fetchone()
         return int(row[0])
+
+    def application(self, source: str, source_id: str) -> ApplicationRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM applications WHERE source = ? AND source_id = ?",
+            (source, source_id),
+        ).fetchone()
+        return ApplicationRecord(**dict(row)) if row else None
+
+    def record_inspection(self, source: str, source_id: str, form_url: str) -> None:
+        current = self.application(source, source_id)
+        if current and current.status in {"attempted", "submitted"}:
+            raise ApplicationStateError("Заявка уже была отправлена или попытка отправки неясна")
+        if self.get_vacancy(source, source_id) is None:
+            raise ApplicationStateError("Вакансия не найдена")
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO applications (source, source_id, form_url, status, updated_at)
+                VALUES (?, ?, ?, 'inspected', ?)
+                ON CONFLICT(source, source_id) DO UPDATE SET
+                    form_url = excluded.form_url, status = 'inspected', review_id = NULL,
+                    review_path = NULL, screenshot_path = NULL, updated_at = excluded.updated_at
+                """,
+                (source, source_id, form_url, now),
+            )
+
+    def record_review(
+        self,
+        source: str,
+        source_id: str,
+        review_id: str,
+        review_path: str,
+        screenshot_path: str,
+    ) -> None:
+        with self.connection:
+            result = self.connection.execute(
+                """
+                UPDATE applications SET status = 'review_ready', review_id = ?,
+                    review_path = ?, screenshot_path = ?, updated_at = ?
+                WHERE source = ? AND source_id = ? AND status = 'inspected'
+                """,
+                (
+                    review_id,
+                    review_path,
+                    screenshot_path,
+                    datetime.now().astimezone().isoformat(timespec="seconds"),
+                    source,
+                    source_id,
+                ),
+            )
+            if result.rowcount != 1:
+                raise ApplicationStateError("Форма не проверена или заявка уже обработана")
+
+    def record_attempt(self, source: str, source_id: str, review_id: str) -> None:
+        with self.connection:
+            result = self.connection.execute(
+                """
+                UPDATE applications SET status = 'attempted', updated_at = ?
+                WHERE source = ? AND source_id = ? AND status = 'review_ready' AND review_id = ?
+                """,
+                (
+                    datetime.now().astimezone().isoformat(timespec="seconds"),
+                    source,
+                    source_id,
+                    review_id,
+                ),
+            )
+            if result.rowcount != 1:
+                raise ApplicationStateError("Нет подтверждённой заявки или отправка уже началась")
+
+    def record_submitted(self, source: str, source_id: str, submission_path: str) -> None:
+        with self.connection:
+            result = self.connection.execute(
+                """
+                UPDATE applications SET status = 'submitted', submission_path = ?, updated_at = ?
+                WHERE source = ? AND source_id = ? AND status = 'attempted'
+                """,
+                (
+                    submission_path,
+                    datetime.now().astimezone().isoformat(timespec="seconds"),
+                    source,
+                    source_id,
+                ),
+            )
+            if result.rowcount != 1:
+                raise ApplicationStateError("Попытка отправки не зарегистрирована")
