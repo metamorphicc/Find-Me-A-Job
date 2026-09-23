@@ -23,6 +23,7 @@ class SearchConfig:
     strict_remote: bool
     days: int
     per_query: int
+    sources: tuple[str, ...] = ("hh",)
 
 
 @dc(frozen=True, slots=True)
@@ -93,6 +94,7 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         strict_remote=strict_remote,
         days=_bounded_int(raw.get("days"), "saved days", 1, 30),
         per_query=_bounded_int(raw.get("per_query"), "saved per_query", 1, 500),
+        sources=_strings(raw.get("sources", list(base.sources)), "saved sources"),
     )
 
 
@@ -151,7 +153,10 @@ def load_config(path: str | Path) -> AppConfig:
         strict_remote=bool(search_raw.get("strict_remote", True)),
         days=_bounded_int(search_raw.get("days", 7), "search.days", 1, 30),
         per_query=_bounded_int(search_raw.get("per_query", 50), "search.per_query", 1, 500),
+        sources=_strings(search_raw.get("sources", ["hh"]), "search.sources"),
     )
+    if not search.sources:
+        raise ConfigError("search.sources must contain at least one source")
     return AppConfig(
         search=load_search_settings(search, search_settings_path(database_path)),
         hh=HhConfig(

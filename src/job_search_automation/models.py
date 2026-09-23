@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import MISSING, asdict, fields
 from dataclasses import dataclass as dc
 from typing import Any
 
@@ -23,6 +23,10 @@ class Vacancy:
     salary_gross: bool | None
     summary: str
     query: str
+    kind: str = "job"
+    market: str = "ru"
+    location_scope: str = ""
+    pay_label: str = ""
 
     def is_remote(self) -> bool:
         return "REMOTE" in self.work_formats
@@ -38,9 +42,16 @@ class Vacancy:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> Vacancy:
-        return cls(
-            **{
-                field: tuple(value[field]) if field == "work_formats" else value[field]
-                for field in cls.__dataclass_fields__
-            }
-        )
+        data = {}
+        for field in fields(cls):
+            if field.name in value:
+                data[field.name] = (
+                    tuple(value[field.name])
+                    if field.name == "work_formats"
+                    else value[field.name]
+                )
+            elif field.default is not MISSING:
+                data[field.name] = field.default
+            else:
+                raise ValueError(f"Missing vacancy field: {field.name}")
+        return cls(**data)

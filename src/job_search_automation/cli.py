@@ -18,7 +18,7 @@ from job_search_automation.forms import (
 )
 from job_search_automation.hh import HhApiError
 from job_search_automation.reporting import write_report
-from job_search_automation.search import scan_vacancies
+from job_search_automation.search import SearchError, scan_vacancies
 from job_search_automation.storage import VacancyStore
 from job_search_automation.telegram_bot import TelegramApiError, run_bot
 
@@ -44,6 +44,7 @@ def _scan(config_path: Path, *, open_report: bool) -> int:
                 "accepted": result.accepted_count,
                 "new": len(result.new_items),
                 "transport": result.transport,
+                "errors": result.errors,
                 "report": str(markdown),
                 "report_html": str(report_html),
                 "data": str(data),
@@ -139,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except (ConfigError, FormProbeError, HhApiError, TelegramApiError, OSError) as exc:
+    except (ConfigError, FormProbeError, HhApiError, SearchError, TelegramApiError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2

@@ -44,7 +44,7 @@ from job_search_automation.reply_templates import (
     templates_path,
 )
 from job_search_automation.reporting import _salary
-from job_search_automation.search import ScanResult, scan_vacancies
+from job_search_automation.search import ScanResult, SearchError, scan_vacancies
 from job_search_automation.storage import ApplicationStateError, VacancyStore
 from job_search_automation.tilda_apply import FillError
 
@@ -135,6 +135,12 @@ def _shorten(text: str, limit: int) -> str:
     return compact if len(compact) <= limit else f"{compact[: limit - 1].rstrip()}…"
 
 
+def _callback_ref(source: str, source_id: str) -> bool:
+    return bool(re.fullmatch(r"[a-z_]{2,20}", source)) and bool(
+        re.fullmatch(r"[A-Za-z0-9_-]{1,32}", source_id)
+    )
+
+
 def vacancy_message(
     vacancy: Vacancy,
     profile: CandidateProfile | None,
@@ -150,8 +156,11 @@ def vacancy_message(
     message = (
         f"<b>{index}/{total} · {title}</b>\n"
         f"{company} · {area}\n"
-        f"Удалённо · Опыт: {html.escape(vacancy.experience)} · "
-        f"Зарплата: {html.escape(_salary(vacancy))}\n"
+        f"{html.escape(vacancy.source)} · {'Заказ' if vacancy.kind == 'freelance' else 'Вакансия'} "
+        f"· {html.escape(vacancy.market.upper())} · "
+        f"{'Бюджет' if vacancy.kind == 'freelance' else 'Зарплата'}: "
+        f"{html.escape(vacancy.pay_label or _salary(vacancy))}\n"
+        f"География: {html.escape(vacancy.location_scope or vacancy.area)}\n"
         f"{summary or 'Краткое описание отсутствует.'}\n\n"
         f'<a href="{url}">Открыть вакансию ↗</a>\n'
         f"{url}"
@@ -620,19 +629,19 @@ class JobTelegramBot:
                 self.show_template(chat_id, action.removeprefix("templates:"))
             elif action.startswith("reply:"):
                 parts = action.split(":")
-                if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
+                if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
                     self.show_reply_choices(chat_id, parts[1], parts[2])
             elif action.startswith("replypick:"):
                 parts = action.split(":")
-                if len(parts) == 4 and parts[1] == "hh" and parts[2].isdigit():
+                if len(parts) == 4 and _callback_ref(parts[1], parts[2]):
                     self.show_reply_with_template(chat_id, parts[1], parts[2], parts[3])
             elif action.startswith("appprep:"):
                 parts = action.split(":")
-                if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
+                if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
                     self._begin_application(chat_id, parts[1], parts[2])
             elif action.startswith("apprefresh:"):
                 parts = action.split(":")
-                if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
+                if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
                     try:
                         self.show_application_review(
                             chat_id, self.applications.refresh(parts[1], parts[2])
@@ -641,7 +650,7 @@ class JobTelegramBot:
                         self.api.send_message(chat_id, f"Не удалось проверить форму: {exc}")
             elif action.startswith("appclose:"):
                 parts = action.split(":")
-                if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
+                if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
                     self.applications.close(parts[1], parts[2])
                     with VacancyStore(self.config.database_path) as store:
                         record = store.application(parts[1], parts[2])
@@ -654,7 +663,7 @@ class JobTelegramBot:
                     self.api.send_message(chat_id, f"Окно заявки закрыто. {result}")
             elif action.startswith("appsubmit:"):
                 parts = action.split(":")
-                if len(parts) == 4 and parts[1] == "hh" and parts[2].isdigit():
+                if len(parts) == 4 and _callback_ref(parts[1], parts[2]):
                     self._submit_application(chat_id, parts[1], parts[2], parts[3])
             elif action.startswith("edit:"):
                 parts = action.split(":", 2)
@@ -670,10 +679,12 @@ class JobTelegramBot:
         try:
             current_config = replace(self.config, search=self._search_settings())
             result = self.scanner(current_config)
-        except (ConfigError, HhApiError, PlaywrightError, OSError) as exc:
+        except (ConfigError, HhApiError, SearchError, PlaywrightError, OSError) as exc:
             self.api.send_message(chat_id, f"Поиск не удался: {_shorten(str(exc), 300)}")
             return
         self.new_items[chat_id] = result.new_items
+        if result.errors:
+            self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
         if not result.new_items:
             self.api.send_message(
                 chat_id,
@@ -871,16 +882,14 @@ class JobTelegramBot:
     ) -> dict[str, Any] | None:
         if (
             profile is None
-            or vacancy.source != "hh"
-            or not vacancy.source_id.isdigit()
-            or len(vacancy.source_id) > 20
+            or not _callback_ref(vacancy.source, vacancy.source_id)
         ):
             return None
         buttons = [
             [
                 {
                     "text": "📝 Другой шаблон",
-                    "callback_data": f"reply:hh:{vacancy.source_id}",
+                    "callback_data": f"reply:{vacancy.source}:{vacancy.source_id}",
                 }
             ]
         ]
@@ -891,7 +900,7 @@ class JobTelegramBot:
                 [
                     {
                         "text": "📄 Подготовить заявку",
-                        "callback_data": f"appprep:hh:{vacancy.source_id}",
+                        "callback_data": f"appprep:{vacancy.source}:{vacancy.source_id}",
                     }
                 ]
             )
