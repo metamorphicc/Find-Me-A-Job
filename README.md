@@ -82,3 +82,5 @@ Before publishing, run `.\.venv\Scripts\python.exe scripts/privacy_scan.py .`. I
 4. Open the bot in Telegram and send `/id`. Put the returned number in `allowed_user_ids` in the ignored `config.toml`, for example `allowed_user_ids = [123456789]`. Restart the bot, send `/start`, then use the two buttons.
 
 The Telegram token and candidate profile stay in local ignored files, but values you edit through the bot and filled reply text are sent through your private Telegram chat. Only allowed numeric user IDs can search, read history, or edit settings. The bot accepts private chats only.
+
+For automatic morning searches, enable **⚙️ Настройки → ⏰ Ежедневный поиск** and set the time and IANA time zone. The bot checks once per local day and remembers the last run across restarts. It must stay running; to search while your computer is off, use the [Linux VPS service guide](deploy/README.md). On a headless server, the bot sends a screenshot of a prepared form to your private chat before offering submission.

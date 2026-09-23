@@ -18,9 +18,13 @@ from job_search_automation.config import (
     AppConfig,
     ConfigError,
     SearchConfig,
+    load_schedule_settings,
     load_search_settings,
+    save_schedule_settings,
     save_search_settings,
+    schedule_settings_path,
     search_settings_path,
+    validate_schedule,
 )
 from job_search_automation.discover import discover_application_links
 from job_search_automation.forms import FormProbeError
@@ -46,6 +50,7 @@ from job_search_automation.reply_templates import (
     templates_path,
 )
 from job_search_automation.reporting import _salary
+from job_search_automation.scheduling import DailyScheduler
 from job_search_automation.search import ScanResult, SearchError, scan_vacancies
 from job_search_automation.storage import ApplicationStateError, VacancyStore
 from job_search_automation.tilda_apply import FillError
@@ -148,6 +153,21 @@ class TelegramApi:
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         self._request("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
 
+    def send_photo(self, chat_id: int, path: Path) -> None:
+        try:
+            with path.open("rb") as stream:
+                response = self.session.post(
+                    f"https://api.telegram.org/bot{self.token}/sendPhoto",
+                    data={"chat_id": str(chat_id)},
+                    files={"photo": (path.name, stream, "image/png")},
+                    timeout=45,
+                )
+            data = response.json()
+        except (requests.RequestException, OSError, ValueError) as exc:
+            raise TelegramApiError("Не удалось отправить снимок формы в Telegram") from exc
+        if not response.ok or not isinstance(data, dict) or not data.get("ok"):
+            raise TelegramApiError("Telegram не принял снимок формы")
+
 
 def _shorten(text: str, limit: int) -> str:
     compact = " ".join(text.split())
@@ -214,7 +234,9 @@ class JobTelegramBot:
         self.scanner = scanner
         self.new_items: dict[int, list[Vacancy]] = {}
         self.pending_edits: dict[int, tuple[str, str]] = {}
-        self.applications = application_manager or ApplicationManager(config)
+        self.applications = application_manager or ApplicationManager(
+            config, headless=os.environ.get("JOB_SEARCH_HEADLESS") == "1"
+        )
 
     def _search_settings(self) -> SearchConfig:
         path = search_settings_path(self.config.database_path)
@@ -232,6 +254,7 @@ class JobTelegramBot:
             reply_markup={
                 "inline_keyboard": [
                     [{"text": "🔎 Фильтры поиска", "callback_data": "settings:search"}],
+                    [{"text": "⏰ Ежедневный поиск", "callback_data": "settings:schedule"}],
                     [{"text": "📝 Данные для отклика", "callback_data": "settings:profile"}],
                     [{"text": "✉️ Шаблоны отклика", "callback_data": "templates"}],
                     [{"text": "← Назад", "callback_data": "menu:main"}],
@@ -380,6 +403,36 @@ class JobTelegramBot:
             reply_markup={"inline_keyboard": buttons},
         )
 
+    def _schedule_settings(self):
+        return load_schedule_settings(
+            self.config.schedule, schedule_settings_path(self.config.database_path)
+        )
+
+    def show_schedule_settings(self, chat_id: int) -> None:
+        try:
+            schedule = self._schedule_settings()
+        except ConfigError as exc:
+            self.api.send_message(chat_id, f"Не удалось прочитать расписание: {exc}")
+            return
+        self.api.send_message(
+            chat_id,
+            f"Ежедневный поиск: {'включён' if schedule.enabled else 'выключен'}\n"
+            f"Время: {schedule.time} ({schedule.timezone})\n"
+            "Бот должен работать на включённом компьютере или сервере.",
+            reply_markup={
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "Выключить" if schedule.enabled else "Включить",
+                            "callback_data": "toggle:schedule",
+                        }
+                    ],
+                    [{"text": "Время", "callback_data": "edit:schedule:time"}],
+                    [{"text": "Часовой пояс", "callback_data": "edit:schedule:timezone"}],
+                    [{"text": "← Настройки", "callback_data": "settings"}],
+                ]
+            },
+        )
     def _begin_edit(self, chat_id: int, kind: str, field: str) -> None:
         if kind == "template":
             key, _, template_field = field.partition(":")
@@ -408,6 +461,9 @@ class JobTelegramBot:
                     else " Формат: название поля = значение. Для удаления: название поля = -."
                 )
             )
+        elif kind == "schedule" and field in {"time", "timezone"}:
+            label = "время HH:MM" if field == "time" else "часовой пояс IANA"
+            extra = " Например, 09:00." if field == "time" else " Например, Asia/Novosibirsk."
         elif kind == "fact" and field == "new":
             label = "Дополнительный факт профиля"
             extra = " Формат: название поля = значение. Для удаления: название поля = -."
@@ -450,6 +506,16 @@ class JobTelegramBot:
                 if not separator:
                     raise ProfileError("Отправьте «Название поля = значение»")
                 save_custom_fact(self.config.profile_path, name, value)
+            elif kind == "schedule":
+                current = self._schedule_settings()
+                updated = validate_schedule(
+                    current.enabled,
+                    text.strip() if field == "time" else current.time,
+                    text.strip() if field == "timezone" else current.timezone,
+                )
+                save_schedule_settings(
+                    updated, schedule_settings_path(self.config.database_path)
+                )
             else:
                 items = tuple(item.strip() for item in re.split(r"[,;\n]", text) if item.strip())
                 if text.strip() == "-":
@@ -472,6 +538,8 @@ class JobTelegramBot:
             self.show_template(chat_id, field.partition(":")[0])
         elif kind in {"profile", "fact"}:
             self.show_profile_settings(chat_id)
+        elif kind == "schedule":
+            self.show_schedule_settings(chat_id)
         else:
             self.show_search_settings(chat_id)
 
@@ -537,6 +605,14 @@ class JobTelegramBot:
             elif action == "toggle:strict":
                 enabled = not settings.strict_remote
                 self._save_search_settings(strict_remote=enabled, remote_only=True)
+            elif action == "toggle:schedule":
+                current = self._schedule_settings()
+                updated = validate_schedule(
+                    not current.enabled, current.time, current.timezone
+                )
+                save_schedule_settings(updated, schedule_settings_path(self.config.database_path))
+                self.show_schedule_settings(chat_id)
+                return
             elif action.startswith("toggle:source:"):
                 source = action.removeprefix("toggle:source:")
                 if source not in SOURCE_LABELS:
@@ -727,6 +803,9 @@ class JobTelegramBot:
             elif action == "settings:search":
                 self.pending_edits.pop(chat_id, None)
                 self.show_search_settings(chat_id)
+            elif action == "settings:schedule":
+                self.pending_edits.pop(chat_id, None)
+                self.show_schedule_settings(chat_id)
             elif action == "settings:profile":
                 self.pending_edits.pop(chat_id, None)
                 self.show_profile_settings(chat_id)
@@ -787,14 +866,15 @@ class JobTelegramBot:
             elif action.startswith(("toggle:", "set:")):
                 self._apply_choice(chat_id, action)
 
-    def scan(self, chat_id: int) -> None:
-        self.api.send_message(chat_id, "Ищу вакансии по сохранённым фильтрам…")
-        try:
-            current_config = replace(self.config, search=self._search_settings())
-            result = self.scanner(current_config)
-        except (ConfigError, HhApiError, SearchError, PlaywrightError, OSError) as exc:
-            self.api.send_message(chat_id, f"Поиск не удался: {_shorten(str(exc), 300)}")
-            return
+    def scan(self, chat_id: int, result: ScanResult | None = None) -> ScanResult | None:
+        if result is None:
+            self.api.send_message(chat_id, "Ищу вакансии по сохранённым фильтрам…")
+            try:
+                current_config = replace(self.config, search=self._search_settings())
+                result = self.scanner(current_config)
+            except (ConfigError, HhApiError, SearchError, PlaywrightError, OSError) as exc:
+                self.api.send_message(chat_id, f"Поиск не удался: {_shorten(str(exc), 300)}")
+                return None
         self.new_items[chat_id] = result.new_items
         if result.errors:
             self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
@@ -809,13 +889,14 @@ class JobTelegramBot:
                     ]
                 },
             )
-            return
+            return result
         self.api.send_message(
             chat_id,
             f"Нашёл {len(result.new_items)} новых вакансий. Проверено: {result.fetched_count}, "
             f"подошло: {result.accepted_count}.",
         )
         self.show_new(chat_id, 0)
+        return result
 
     def _begin_application(self, chat_id: int, source: str, source_id: str) -> None:
         if self._optional_profile(chat_id) is None:
@@ -897,6 +978,15 @@ class JobTelegramBot:
         self.show_application_review(chat_id, summary)
 
     def show_application_review(self, chat_id: int, summary: ReviewSummary) -> None:
+        if getattr(self.applications, "headless", False):
+            try:
+                self.api.send_photo(chat_id, summary.screenshot_path)
+            except (TelegramApiError, OSError) as exc:
+                self.api.send_message(
+                    chat_id,
+                    f"Не удалось показать заполненную форму: {exc}. Отправка заблокирована.",
+                )
+                return
         missing = ", ".join(summary.missing_required) or "нет"
         uploaded = summary.uploaded_filename or "нет"
         buttons = [
@@ -934,7 +1024,12 @@ class JobTelegramBot:
             f"Источник данных: {', '.join(summary.field_sources) or 'нет'}\n"
             f"Резюме прикреплено: {uploaded}\n"
             f"Обязательные поля для проверки: {missing}\n"
-            "Проверьте открытую форму в браузере. Снимок и отчёт сохранены локально. "
+            + (
+                "Проверьте снимок формы в Telegram. "
+                if getattr(self.applications, "headless", False)
+                else "Проверьте открытую форму в браузере. "
+            )
+            + "Снимок и отчёт сохранены локально. "
             "Заявка ещё не отправлена.",
             reply_markup={"inline_keyboard": buttons},
         )
@@ -1137,10 +1232,29 @@ def run_bot(config: AppConfig) -> None:
     api = TelegramApi(config.telegram.bot_token)
     bot = JobTelegramBot(config, api)
     offset_path = config.database_path.parent / "telegram-offset.json"
+    scheduler = DailyScheduler(config.schedule, config.database_path.parent / "schedule-state.json")
     offset = _load_offset(offset_path)
     print("Telegram-бот запущен. Остановить: Ctrl+C.", flush=True)
     try:
         while True:
+            try:
+                scheduler.schedule = load_schedule_settings(
+                    config.schedule, schedule_settings_path(config.database_path)
+                )
+            except ConfigError as exc:
+                print(f"Расписание недоступно: {exc}", flush=True)
+            due_day = scheduler.due()
+            if due_day:
+                scheduler.mark(due_day)
+                if config.telegram.allowed_user_ids:
+                    owner, *others = config.telegram.allowed_user_ids
+                    try:
+                        result = bot.scan(owner)
+                        if result is not None:
+                            for user_id in others:
+                                bot.scan(user_id, result=result)
+                    except (TelegramApiError, OSError, ValueError) as exc:
+                        print(f"Ежедневный поиск не удался: {exc}", flush=True)
             try:
                 updates = api.get_updates(offset)
             except TelegramApiError as exc:

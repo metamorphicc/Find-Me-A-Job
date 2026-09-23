@@ -25,3 +25,8 @@ bot_token = ""
 allowed_user_ids = []
 page_size = 5
 profile = "profile.json"
+
+[schedule]
+enabled = false
+time = "09:00"
+timezone = "Asia/Novosibirsk"

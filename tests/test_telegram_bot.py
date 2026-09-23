@@ -63,12 +63,16 @@ class FakeApi:
     def __init__(self) -> None:
         self.messages = []
         self.callbacks = []
+        self.photos = []
 
     def send_message(self, chat_id, text, *, reply_markup=None, html_mode=False) -> None:
         self.messages.append((chat_id, text, reply_markup, html_mode))
 
     def answer_callback(self, callback_id, text="") -> None:
         self.callbacks.append((callback_id, text))
+
+    def send_photo(self, chat_id, path) -> None:
+        self.photos.append((chat_id, path))
 
 
 def message(text: str, user_id: int = 42) -> dict:
@@ -432,3 +436,31 @@ def test_bot_edits_custom_fact_and_template_form_value(tmp_path) -> None:
     bot.handle_update(message("Salary = 100000"))
     template = next(item for item in load_templates(templates_path(settings.database_path)) if item.key == "python")
     assert template.form_values == (("Salary", "100000"),)
+
+
+def test_shared_scheduled_result_does_not_repeat_search(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    calls = []
+
+    def scan(_config):
+        calls.append(1)
+        return ScanResult([vacancy()], 1, 1, "test")
+
+    bot = JobTelegramBot(settings, api, scanner=scan)
+    result = bot.scan(42)
+    bot.scan(43, result=result)
+    assert len(calls) == 1
+    assert len([text for chat_id, text, _, mode in api.messages if chat_id == 43 and mode]) == 1
+
+
+def test_bot_can_set_daily_search_time(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+    bot.handle_update(callback("settings:schedule"))
+    bot.handle_update(callback("edit:schedule:time"))
+    bot.handle_update(message("08:30"))
+    bot.handle_update(callback("toggle:schedule"))
+    assert bot._schedule_settings().enabled is True
+    assert bot._schedule_settings().time == "08:30"

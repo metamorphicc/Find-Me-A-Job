@@ -7,6 +7,7 @@ from dataclasses import asdict
 from dataclasses import dataclass as dc
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class ConfigError(ValueError):
@@ -46,6 +47,13 @@ class TelegramConfig:
 
 
 @dc(frozen=True, slots=True)
+class ScheduleConfig:
+    enabled: bool = False
+    time: str = "09:00"
+    timezone: str = "Asia/Novosibirsk"
+
+
+@dc(frozen=True, slots=True)
 class AppConfig:
     search: SearchConfig
     hh: HhConfig
@@ -54,6 +62,7 @@ class AppConfig:
     telegram: TelegramConfig
     profile_path: Path
     superjob_app_key: str = ""
+    schedule: ScheduleConfig = ScheduleConfig()
 
 
 def _strings(value: Any, field: str) -> tuple[str, ...]:
@@ -72,6 +81,52 @@ def _bounded_int(value: Any, field: str, minimum: int, maximum: int) -> int:
 
 def search_settings_path(database_path: Path) -> Path:
     return database_path.parent / "search-settings.json"
+
+
+def schedule_settings_path(database_path: Path) -> Path:
+    return database_path.parent / "schedule-settings.json"
+
+
+def validate_schedule(enabled: bool, time: str, timezone: str) -> ScheduleConfig:
+    if not isinstance(enabled, bool):
+        raise ConfigError("schedule.enabled must be true or false")
+    if (
+        not isinstance(time, str)
+        or len(time) != 5
+        or time[2] != ":"
+        or not time[:2].isdigit()
+        or not time[3:].isdigit()
+        or int(time[:2]) > 23
+        or int(time[3:]) > 59
+    ):
+        raise ConfigError("schedule.time must be HH:MM")
+    if not isinstance(timezone, str) or not timezone:
+        raise ConfigError("schedule.timezone must be a valid IANA timezone")
+    try:
+        ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise ConfigError(f"Unknown schedule timezone: {timezone}") from exc
+    return ScheduleConfig(enabled, time, timezone)
+
+
+def load_schedule_settings(base: ScheduleConfig, path: Path) -> ScheduleConfig:
+    if not path.is_file():
+        return base
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"Cannot read saved schedule: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError("Saved schedule must be a JSON object")
+    return validate_schedule(raw.get("enabled"), raw.get("time"), raw.get("timezone"))
+
+
+def save_schedule_settings(schedule: ScheduleConfig, path: Path) -> None:
+    validate_schedule(schedule.enabled, schedule.time, schedule.timezone)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(asdict(schedule), ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _validate_search(search: SearchConfig) -> SearchConfig:
@@ -138,10 +193,12 @@ def load_config(path: str | Path) -> AppConfig:
     hh_raw = raw.get("hh", {})
     storage_raw = raw.get("storage", {})
     telegram_raw = raw.get("telegram", {})
+    schedule_raw = raw.get("schedule", {})
     if not all(
-        isinstance(value, dict) for value in (search_raw, hh_raw, storage_raw, telegram_raw)
+        isinstance(value, dict)
+        for value in (search_raw, hh_raw, storage_raw, telegram_raw, schedule_raw)
     ):
-        raise ConfigError("search, hh, storage, and telegram must be TOML tables")
+        raise ConfigError("search, hh, storage, telegram, and schedule must be TOML tables")
 
     queries = _strings(search_raw.get("queries"), "search.queries")
     if not queries:
@@ -172,6 +229,11 @@ def load_config(path: str | Path) -> AppConfig:
         kinds=_strings(search_raw.get("kinds", ["job", "freelance"]), "search.kinds"),
     )
     _validate_search(search)
+    schedule = validate_schedule(
+        schedule_raw.get("enabled", False),
+        str(schedule_raw.get("time", "09:00")),
+        str(schedule_raw.get("timezone", "Asia/Novosibirsk")),
+    )
     return AppConfig(
         search=load_search_settings(search, search_settings_path(database_path)),
         hh=HhConfig(
@@ -193,4 +255,5 @@ def load_config(path: str | Path) -> AppConfig:
         ),
         profile_path=root / str(telegram_raw.get("profile", "profile.json")),
         superjob_app_key=os.environ.get("SUPERJOB_APP_KEY", "").strip(),
+        schedule=load_schedule_settings(schedule, schedule_settings_path(database_path)),
     )

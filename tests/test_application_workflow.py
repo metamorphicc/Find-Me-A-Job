@@ -9,7 +9,7 @@ from job_search_automation.application_workflow import (
     SubmissionOutcome,
 )
 from job_search_automation.storage import ApplicationStateError, VacancyStore
-from job_search_automation.telegram_bot import JobTelegramBot
+from job_search_automation.telegram_bot import JobTelegramBot, TelegramApiError
 
 
 def test_prepare_saves_review_without_submitting_and_refreshes_after_manual_input(tmp_path) -> None:
@@ -271,3 +271,36 @@ def test_generic_form_is_filled_and_submitted_only_after_review(tmp_path) -> Non
         assert page.evaluate("window.sent === true") is True
     finally:
         manager.close_all()
+
+
+def test_headless_review_sends_screenshot_before_submit_button(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    manager = ApplicationManager(settings, headless=True)
+    bot = JobTelegramBot(settings, api, application_manager=manager)
+    summary = ReviewSummary(
+        "hh", "123", "Python", "https://example.test/apply", "review-id",
+        ("Name",), (), None, tmp_path / "review.json", tmp_path / "review.png",
+    )
+
+    bot.show_application_review(42, summary)
+
+    assert api.photos == [(42, summary.screenshot_path)]
+    assert "appsubmit:hh:123:review-id" in str(api.messages[-1][2])
+
+
+def test_headless_review_without_screenshot_blocks_submit_button(tmp_path) -> None:
+    class FailingApi(FakeApi):
+        def send_photo(self, chat_id, path):
+            raise TelegramApiError("screenshot failed")
+
+    settings = config(tmp_path)
+    api = FailingApi()
+    manager = ApplicationManager(settings, headless=True)
+    bot = JobTelegramBot(settings, api, application_manager=manager)
+    summary = ReviewSummary(
+        "hh", "123", "Python", "https://example.test/apply", "review-id",
+        ("Name",), (), None, tmp_path / "review.json", tmp_path / "review.png",
+    )
+    bot.show_application_review(42, summary)
+    assert "appsubmit" not in str(api.messages[-1][2])
