@@ -21,6 +21,9 @@ EDITABLE_FIELDS = (
     "skills",
     "resume_url",
     "portfolio_url",
+    "email",
+    "phone",
+    "city",
 )
 
 
@@ -32,6 +35,10 @@ class CandidateProfile:
     skills: tuple[str, ...]
     resume_url: str
     portfolio_url: str
+    email: str = ""
+    phone: str = ""
+    city: str = ""
+    resume_path: str = ""
 
     def application_text(self, vacancy: Vacancy) -> str:
         lines = [
@@ -83,6 +90,10 @@ def load_profile(path: str | Path) -> CandidateProfile:
         skills=tuple(skill.strip() for skill in skills if skill.strip()),
         resume_url=_text(raw, "resume_url"),
         portfolio_url=_text(raw, "portfolio_url"),
+        email=_text(raw, "email"),
+        phone=_text(raw, "phone"),
+        city=_text(raw, "city"),
+        resume_path=_text(raw, "resume_path"),
     )
     combined_length = sum(
         len(value)
@@ -92,6 +103,10 @@ def load_profile(path: str | Path) -> CandidateProfile:
             profile.contact,
             profile.resume_url,
             profile.portfolio_url,
+            profile.email,
+            profile.phone,
+            profile.city,
+            profile.resume_path,
             *profile.skills,
         )
     )
@@ -125,6 +140,14 @@ def save_profile_field(path: str | Path, field: str, text: str) -> None:
         and not value.startswith("https://")
     ):
         raise ProfileError("Ссылка должна начинаться с https://")
+    if (
+        field == "email"
+        and value not in {"", "-"}
+        and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value)
+    ):
+        raise ProfileError("Укажите корректный адрес электронной почты")
+    if field == "phone" and value not in {"", "-"} and not re.fullmatch(r"[+\d()\s-]{7,30}", value):
+        raise ProfileError("Укажите телефон цифрами, можно с +, пробелами и скобками")
     if field == "skills":
         parsed: str | list[str] = (
             []
@@ -151,3 +174,17 @@ def save_profile_field(path: str | Path, field: str, text: str) -> None:
     temporary = profile_path.with_name(f"{profile_path.name}.tmp")
     temporary.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, profile_path)
+
+
+def resume_file(profile: CandidateProfile, profile_path: str | Path) -> Path:
+    if not profile.resume_path:
+        raise ProfileError("Укажите resume_path в локальном profile.json")
+    path = Path(profile.resume_path)
+    if not path.is_absolute():
+        path = Path(profile_path).resolve().parent / path
+    path = path.resolve()
+    if not path.is_file() or path.suffix.lower() not in {".pdf", ".doc", ".docx"}:
+        raise ProfileError("Резюме не найдено или формат файла не поддерживается")
+    if path.stat().st_size > 10 * 1024 * 1024:
+        raise ProfileError("Резюме должно быть не больше 10 МБ")
+    return path

@@ -63,6 +63,9 @@ PROFILE_LABELS = {
     "skills": "Навыки",
     "resume_url": "Ссылка на резюме",
     "portfolio_url": "Ссылка на портфолио",
+    "email": "Эл. почта для анкеты",
+    "phone": "Телефон для анкеты",
+    "city": "Город для анкеты",
 }
 
 
@@ -349,7 +352,7 @@ class JobTelegramBot:
             extra = " Навыки перечислите через запятую." if field == "skills" else ""
             extra += (
                 " Отправьте '-' для очистки."
-                if field in {"skills", "resume_url", "portfolio_url"}
+                if field in {"skills", "resume_url", "portfolio_url", "email", "phone", "city"}
                 else ""
             )
         elif kind == "search" and field in {"queries", "excluded_keywords", "area_ids"}:

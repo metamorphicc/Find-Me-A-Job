@@ -4,5 +4,9 @@
   "contact": "REPLACE_WITH_YOUR_CONTACT",
   "skills": [],
   "resume_url": "",
-  "portfolio_url": ""
+  "portfolio_url": "",
+  "email": "",
+  "phone": "",
+  "city": "",
+  "resume_path": ""
 }
