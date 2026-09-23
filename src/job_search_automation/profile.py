@@ -24,6 +24,15 @@ EDITABLE_FIELDS = (
     "email",
     "phone",
     "city",
+    "experience",
+    "education",
+    "languages",
+    "timezone",
+    "availability",
+    "work_authorization",
+    "rate",
+    "about_en",
+    "resume_path",
 )
 
 
@@ -39,6 +48,15 @@ class CandidateProfile:
     phone: str = ""
     city: str = ""
     resume_path: str = ""
+    experience: str = ""
+    education: str = ""
+    languages: str = ""
+    timezone: str = ""
+    availability: str = ""
+    work_authorization: str = ""
+    rate: str = ""
+    about_en: str = ""
+    facts: tuple[tuple[str, str], ...] = ()
 
     def application_text(self, vacancy: Vacancy) -> str:
         lines = [
@@ -83,6 +101,11 @@ def load_profile(path: str | Path) -> CandidateProfile:
     skills = raw.get("skills", [])
     if not isinstance(skills, list) or any(not isinstance(skill, str) for skill in skills):
         raise ProfileError("profile.skills должен быть списком строк")
+    facts = raw.get("facts", {})
+    if not isinstance(facts, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str) for key, value in facts.items()
+    ):
+        raise ProfileError("profile.facts должен быть объектом с текстовыми значениями")
     profile = CandidateProfile(
         name=_text(raw, "name", required=True),
         about=_text(raw, "about", required=True),
@@ -94,6 +117,15 @@ def load_profile(path: str | Path) -> CandidateProfile:
         phone=_text(raw, "phone"),
         city=_text(raw, "city"),
         resume_path=_text(raw, "resume_path"),
+        experience=_text(raw, "experience"),
+        education=_text(raw, "education"),
+        languages=_text(raw, "languages"),
+        timezone=_text(raw, "timezone"),
+        availability=_text(raw, "availability"),
+        work_authorization=_text(raw, "work_authorization"),
+        rate=_text(raw, "rate"),
+        about_en=_text(raw, "about_en"),
+        facts=tuple((key.strip(), value.strip()) for key, value in facts.items() if value.strip()),
     )
     combined_length = sum(
         len(value)
@@ -107,10 +139,19 @@ def load_profile(path: str | Path) -> CandidateProfile:
             profile.phone,
             profile.city,
             profile.resume_path,
+            profile.experience,
+            profile.education,
+            profile.languages,
+            profile.timezone,
+            profile.availability,
+            profile.work_authorization,
+            profile.rate,
+            profile.about_en,
             *profile.skills,
+            *(key + value for key, value in profile.facts),
         )
     )
-    if combined_length > 2200:
+    if combined_length > 6000:
         raise ProfileError("Текст profile.json слишком длинный для одного сообщения Telegram")
     return profile
 
@@ -158,7 +199,7 @@ def save_profile_field(path: str | Path, field: str, text: str) -> None:
             raise ProfileError("Можно указать не больше 20 навыков")
     else:
         parsed = "" if value == "-" else value
-    if len(value) > (1200 if field == "about" else 400):
+    if len(value) > (1200 if field in {"about", "about_en"} else 400):
         raise ProfileError("Это значение слишком длинное для сообщения Telegram")
     raw = read_profile_fields(path)
     raw[field] = parsed
@@ -167,8 +208,40 @@ def save_profile_field(path: str | Path, field: str, text: str) -> None:
         for key, item in raw.items()
         if key in EDITABLE_FIELDS and isinstance(item, (str, list))
     )
-    if total_length > 2200:
+    if total_length > 6000:
         raise ProfileError("Профиль слишком длинный для одного сообщения Telegram")
+    profile_path = Path(path)
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = profile_path.with_name(f"{profile_path.name}.tmp")
+    temporary.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, profile_path)
+
+
+def save_custom_fact(path: str | Path, key: str, value: str) -> None:
+    key = key.strip()
+    value = value.strip()
+    if not key or len(key) > 60 or any(char in key for char in "{}\n\r"):
+        raise ProfileError("Название факта должно быть коротким текстом без скобок")
+    if len(value) > 400:
+        raise ProfileError("Значение факта слишком длинное")
+    raw = read_profile_fields(path)
+    facts = raw.get("facts", {})
+    if not isinstance(facts, dict):
+        raise ProfileError("profile.facts должен быть объектом")
+    if value == "-":
+        facts.pop(key, None)
+    else:
+        facts[key] = value
+    if len(facts) > 30:
+        raise ProfileError("Можно сохранить не больше 30 дополнительных фактов")
+    raw["facts"] = facts
+    total_length = sum(
+        len(item) if isinstance(item, str) else sum(len(str(part)) for part in item)
+        for field, item in raw.items()
+        if field in EDITABLE_FIELDS and isinstance(item, (str, list))
+    ) + sum(len(str(name)) + len(str(answer)) for name, answer in facts.items())
+    if total_length > 6000:
+        raise ProfileError("Профиль слишком длинный")
     profile_path = Path(path)
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = profile_path.with_name(f"{profile_path.name}.tmp")

@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 
 import pytest
@@ -45,3 +46,29 @@ def test_rejects_unknown_placeholders_without_changing_saved_template(tmp_path) 
 
     assert load_templates(path) == original
     assert not path.exists()
+
+
+def test_freelance_template_is_selected_and_old_template_file_migrates(tmp_path) -> None:
+    path = tmp_path / "reply-templates.json"
+    path.write_text(
+        json.dumps(
+            {
+                key: {"body": "{name}", "keywords": []}
+                for key in ("internship", "python", "analytics", "general")
+            }
+        ),
+        encoding="utf-8",
+    )
+    templates = load_templates(path)
+    assert select_template(replace(vacancy(), kind="freelance"), templates).key == "freelance_ru"
+    assert (
+        select_template(replace(vacancy(), kind="freelance", market="global"), templates).key
+        == "freelance_global"
+    )
+
+
+def test_template_form_field_values_are_saved(tmp_path) -> None:
+    path = tmp_path / "reply-templates.json"
+    save_template_field(path, "python", "form_value", "Salary = 100000")
+    template = next(item for item in load_templates(path) if item.key == "python")
+    assert template.form_values == (("Salary", "100000"),)

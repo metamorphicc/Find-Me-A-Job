@@ -31,6 +31,7 @@ from job_search_automation.profile import (
     ProfileError,
     load_profile,
     read_profile_fields,
+    save_custom_fact,
     save_profile_field,
 )
 from job_search_automation.reply_templates import (
@@ -69,6 +70,15 @@ PROFILE_LABELS = {
     "email": "Эл. почта для анкеты",
     "phone": "Телефон для анкеты",
     "city": "Город для анкеты",
+    "experience": "Опыт",
+    "education": "Образование",
+    "languages": "Языки",
+    "timezone": "Часовой пояс",
+    "availability": "Когда готов начать",
+    "work_authorization": "Право на работу",
+    "rate": "Ставка / ожидания",
+    "about_en": "About me (English)",
+    "resume_path": "Путь к файлу резюме",
 }
 
 SOURCE_LABELS = {
@@ -306,10 +316,17 @@ class JobTelegramBot:
             if isinstance(value, list):
                 value = ", ".join(str(item) for item in value)
             display.append(f"{label}: {_shorten(str(value or 'не указано'), 100)}")
+        facts = fields.get("facts", {})
+        if isinstance(facts, dict):
+            for key, value in list(facts.items())[:10]:
+                display.append(f"{key}: {_shorten(str(value), 100)}")
+            if len(facts) > 10:
+                display.append(f"И ещё {len(facts) - 10} дополнительных фактов.")
         buttons = [
             [{"text": label, "callback_data": f"edit:profile:{field}"}]
             for field, label in PROFILE_LABELS.items()
         ]
+        buttons.append([{"text": "➕ Дополнительный факт", "callback_data": "edit:fact:new"}])
         buttons.append([{"text": "← Настройки", "callback_data": "settings"}])
         self.api.send_message(
             chat_id,
@@ -345,16 +362,20 @@ class JobTelegramBot:
             self.api.send_message(chat_id, f"Не удалось открыть шаблон: {exc}")
             return
         buttons = [[{"text": "Изменить текст", "callback_data": f"edit:template:{key}:body"}]]
-        if key != "general":
+        if key not in {"general", "freelance_ru", "freelance_global", "job_global"}:
             buttons.append(
                 [{"text": "Слова для выбора", "callback_data": f"edit:template:{key}:keywords"}]
             )
+        buttons.append(
+            [{"text": "Поле анкеты", "callback_data": f"edit:template:{key}:form_value"}]
+        )
         buttons.append([{"text": "← Шаблоны", "callback_data": "templates"}])
         self.api.send_message(
             chat_id,
             f"Шаблон: {template.name}\n"
             f"Слова: {', '.join(template.keywords) or 'используется по умолчанию'}\n\n"
-            f"{template.body}",
+            f"{template.body}\n\n"
+            f"Поля анкеты: {', '.join(key for key, _ in template.form_values) or 'нет'}",
             reply_markup={"inline_keyboard": buttons},
         )
 
@@ -364,23 +385,37 @@ class JobTelegramBot:
             if key not in {item.key for item in DEFAULT_TEMPLATES} or template_field not in {
                 "body",
                 "keywords",
+                "form_value",
             }:
                 return
-            if key == "general" and template_field == "keywords":
+            if key in {"general", "freelance_ru", "freelance_global", "job_global"} and template_field == "keywords":
                 return
-            label = "Текст шаблона" if template_field == "body" else "Слова для выбора"
+            label = {
+                "body": "Текст шаблона",
+                "keywords": "Слова для выбора",
+                "form_value": "Поле анкеты для этого шаблона",
+            }[template_field]
             extra = (
                 " Доступные поля: {name}, {title}, {company}, {about}, {skills_line}, "
-                "{resume_line}, {portfolio_line}, {contact_line}."
+                "{resume_line}, {portfolio_line}, {contact_line}, {about_en}, "
+                "{experience_line}, {education_line}, {languages_line}, "
+                "{availability_line}, {rate_line}."
                 if template_field == "body"
-                else " Перечислите через запятую; '-' очистит список."
+                else (
+                    " Перечислите через запятую; '-' очистит список."
+                    if template_field == "keywords"
+                    else " Формат: название поля = значение. Для удаления: название поля = -."
+                )
             )
+        elif kind == "fact" and field == "new":
+            label = "Дополнительный факт профиля"
+            extra = " Формат: название поля = значение. Для удаления: название поля = -."
         elif kind == "profile" and field in EDITABLE_FIELDS:
             label = PROFILE_LABELS[field]
             extra = " Навыки перечислите через запятую." if field == "skills" else ""
             extra += (
                 " Отправьте '-' для очистки."
-                if field in {"skills", "resume_url", "portfolio_url", "email", "phone", "city"}
+                if field not in {"name", "about", "contact"}
                 else ""
             )
         elif kind == "search" and field in {"queries", "excluded_keywords", "area_ids"}:
@@ -409,6 +444,11 @@ class JobTelegramBot:
                 )
             elif kind == "profile":
                 save_profile_field(self.config.profile_path, field, text)
+            elif kind == "fact":
+                name, separator, value = text.partition("=")
+                if not separator:
+                    raise ProfileError("Отправьте «Название поля = значение»")
+                save_custom_fact(self.config.profile_path, name, value)
             else:
                 items = tuple(item.strip() for item in re.split(r"[,;\n]", text) if item.strip())
                 if text.strip() == "-":
@@ -429,7 +469,7 @@ class JobTelegramBot:
         self.api.send_message(chat_id, "Сохранено.")
         if kind == "template":
             self.show_template(chat_id, field.partition(":")[0])
-        elif kind == "profile":
+        elif kind in {"profile", "fact"}:
             self.show_profile_settings(chat_id)
         else:
             self.show_search_settings(chat_id)
@@ -852,6 +892,7 @@ class JobTelegramBot:
             f"Заявка подготовлена: {summary.title}\n"
             f"Форма: {summary.form_url}\n"
             f"Заполнены поля: {', '.join(summary.filled) or 'нет'}\n"
+            f"Источник данных: {', '.join(summary.field_sources) or 'нет'}\n"
             f"Резюме прикреплено: {uploaded}\n"
             f"Обязательные поля для проверки: {missing}\n"
             "Проверьте открытую форму в браузере. Снимок и отчёт сохранены локально. "

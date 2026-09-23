@@ -8,5 +8,14 @@
   "email": "",
   "phone": "",
   "city": "",
-  "resume_path": ""
+  "resume_path": "",
+  "experience": "",
+  "education": "",
+  "languages": "",
+  "timezone": "",
+  "availability": "",
+  "work_authorization": "",
+  "rate": "",
+  "about_en": "",
+  "facts": {}
 }

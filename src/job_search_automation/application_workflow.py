@@ -38,6 +38,7 @@ class ReviewSummary:
     uploaded_filename: str | None
     review_path: Path
     screenshot_path: Path
+    field_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +203,7 @@ class ApplicationManager:
             uploaded_filename=session.filled.uploaded_filename,
             review_path=review_path,
             screenshot_path=screenshot_path,
+            field_sources=session.filled.field_sources,
         )
         temporary = review_path.with_suffix(".tmp")
         temporary.write_text(

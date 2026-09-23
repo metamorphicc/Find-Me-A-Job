@@ -26,33 +26,59 @@ class FillResult:
     filled: tuple[str, ...]
     missing_required: tuple[str, ...]
     uploaded_filename: str | None
+    field_sources: tuple[str, ...] = ()
 
 
-def _field_value(field: FormField, profile: CandidateProfile, reply: str) -> str | None:
+def _fact_key(value: str) -> str:
+    return re.sub(r"[^\w]+", "", value.casefold().replace("ё", "е"))
+
+
+def _field_value(
+    field: FormField, profile: CandidateProfile, reply: str, template: ReplyTemplate
+) -> tuple[str | None, str]:
     label = f"{field.name} {field.label}".casefold().replace("ё", "е")
     name = field.name.casefold()
+    keys = {_fact_key(field.name), _fact_key(field.label)} - {""}
+    for key, value in template.form_values:
+        if _fact_key(key) in keys:
+            return value, "шаблон"
     if field.kind == "email" or any(word in label for word in ("email", "e-mail", "почт")):
-        return profile.email or None
+        return profile.email or None, "профиль"
     if field.kind == "tel" or any(word in label for word in ("телефон", "phone", "mobile")):
-        return profile.phone or None
+        return profile.phone or None, "профиль"
     if name in {"name", "fullname", "full_name", "fio"} or any(
         word in label for word in ("ваше имя", "фио", "full name", "your name")
     ):
-        return profile.name
+        return profile.name, "профиль"
     if any(word in label for word in ("город", "city", "место проживания")):
-        return profile.city or None
+        return profile.city or None, "профиль"
     if any(
         word in label
         for word in ("сопровод", "письмо", "cover letter", "message", "сообщен", "комментар")
     ):
-        return reply
+        return reply, "шаблон + профиль"
     if any(word in label for word in ("о себе", "about you")):
-        return profile.about
+        return profile.about_en if "about you" in label and profile.about_en else profile.about, "профиль"
     if any(word in label for word in ("портфолио", "portfolio")):
-        return profile.portfolio_url or None
+        return profile.portfolio_url or None, "профиль"
     if any(word in label for word in ("резюме", "resume", "cv")):
-        return profile.resume_url or None
-    return None
+        return profile.resume_url or None, "профиль"
+    standard = (
+        (("опыт", "experience"), profile.experience),
+        (("образован", "education"), profile.education),
+        (("язык", "languages"), profile.languages),
+        (("часовой пояс", "timezone", "time zone"), profile.timezone),
+        (("доступность", "availability", "start date"), profile.availability),
+        (("право на работу", "work authorization", "work permit"), profile.work_authorization),
+        (("ставка", "rate", "salary expectation"), profile.rate),
+    )
+    for patterns, value in standard:
+        if value and any(pattern in label for pattern in patterns):
+            return value, "профиль"
+    for key, value in profile.facts:
+        if _fact_key(key) in keys:
+            return value, "профиль: доп. факт"
+    return None, ""
 
 
 def _fill_text(locator: Locator, value: str) -> None:
@@ -141,6 +167,7 @@ def fill_tilda(
         raise FillError("Форма изменилась после проверки")
     reply = render_reply(profile, vacancy, template)
     filled: list[str] = []
+    field_sources: list[str] = []
     missing: list[str] = []
     uploaded_filename: str | None = None
     for field in probe.fields:
@@ -161,15 +188,17 @@ def fill_tilda(
                 uploader(page, locator, path)
             uploaded_filename = path.name
             filled.append(label)
+            field_sources.append(f"{label}: резюме из профиля")
             continue
         if field.kind in {"checkbox", "radio", "select", "select-one"}:
             if field.required:
                 missing.append(label)
             continue
-        value = _field_value(field, profile, reply)
+        value, origin = _field_value(field, profile, reply, template)
         if value:
             _fill_text(locator, value)
             filled.append(label)
+            field_sources.append(f"{label}: {origin}")
         elif field.required:
             missing.append(label)
-    return FillResult(tuple(filled), tuple(missing), uploaded_filename)
+    return FillResult(tuple(filled), tuple(missing), uploaded_filename, tuple(field_sources))

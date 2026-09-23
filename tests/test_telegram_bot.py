@@ -418,3 +418,17 @@ def test_non_hh_opportunity_has_reply_button(tmp_path) -> None:
     bot.handle_update(message("/history"))
     card_markup = [markup for _, _, markup, mode in api.messages if mode][-1]
     assert card_markup["inline_keyboard"][0][0]["callback_data"] == "reply:wwr:abcdef1234"
+
+
+def test_bot_edits_custom_fact_and_template_form_value(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+    bot.handle_update(callback("edit:fact:new"))
+    bot.handle_update(message("GitHub = https://github.com/example"))
+    assert json.loads(settings.profile_path.read_text(encoding="utf-8"))["facts"]["GitHub"]
+
+    bot.handle_update(callback("edit:template:python:form_value"))
+    bot.handle_update(message("Salary = 100000"))
+    template = next(item for item in load_templates(templates_path(settings.database_path)) if item.key == "python")
+    assert template.form_values == (("Salary", "100000"),)
