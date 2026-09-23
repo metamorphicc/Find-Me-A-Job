@@ -186,7 +186,7 @@ class VacancyStore:
                 """
                 UPDATE applications SET status = 'review_ready', review_id = ?,
                     review_path = ?, screenshot_path = ?, updated_at = ?
-                WHERE source = ? AND source_id = ? AND status = 'inspected'
+                WHERE source = ? AND source_id = ? AND status IN ('inspected', 'review_ready')
                 """,
                 (
                     review_id,

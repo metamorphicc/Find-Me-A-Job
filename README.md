@@ -58,6 +58,8 @@ To inspect an employer's Tilda form without filling or submitting it, run:
 
 The command reports the form's fields and whether it has a submit control and file upload. If a page has several Tilda forms, pass `--form-index N` after identifying the correct one. The form URL must use public HTTPS.
 
+In the bot, open a vacancy card and press **📄 Подготовить заявку**, then send the employer's public HTTPS Tilda-form URL. The bot opens a visible browser on the same computer, fills only known profile fields, attaches the local résumé when the form has an upload field, and leaves unknown required fields and consents for you. Uploadcare transfers the résumé to the employer form's configured account during this preparation step. Review the form in the browser; the bot records a screenshot under ignored `screenshots/` and a value-free review summary under ignored `artifacts/`. After manual corrections, press **🔄 Проверить снова**. The bot must stay running to keep the browser session alive.
+
 ## Telegram bot
 
 The bot runs on your computer and searches when you press **🔎 Искать вакансии**. It sends new vacancies in batches, each with the original link. If nothing new appears, it offers **📚 Ранее найденные**. Search and history work without a candidate profile. If you add one, both new and historical vacancies also include a filled reply text. The bot does not send applications to employers.
