@@ -13,6 +13,7 @@ from typing import Any
 import requests
 from playwright.sync_api import Error as PlaywrightError
 
+from job_search_automation.application_workflow import ApplicationManager, ReviewSummary
 from job_search_automation.config import (
     AppConfig,
     ConfigError,
@@ -21,6 +22,7 @@ from job_search_automation.config import (
     save_search_settings,
     search_settings_path,
 )
+from job_search_automation.forms import FormProbeError
 from job_search_automation.hh import HhApiError
 from job_search_automation.models import Vacancy
 from job_search_automation.profile import (
@@ -43,7 +45,8 @@ from job_search_automation.reply_templates import (
 )
 from job_search_automation.reporting import _salary
 from job_search_automation.search import ScanResult, scan_vacancies
-from job_search_automation.storage import VacancyStore
+from job_search_automation.storage import ApplicationStateError, VacancyStore
+from job_search_automation.tilda_apply import FillError
 
 SEARCH_BUTTON = "🔎 Искать вакансии"
 HISTORY_BUTTON = "📚 Ранее найденные"
@@ -176,12 +179,14 @@ class JobTelegramBot:
         api: TelegramApi,
         *,
         scanner: Callable[[AppConfig], ScanResult] = scan_vacancies,
+        application_manager: ApplicationManager | None = None,
     ) -> None:
         self.config = config
         self.api = api
         self.scanner = scanner
         self.new_items: dict[int, list[Vacancy]] = {}
         self.pending_edits: dict[int, tuple[str, str]] = {}
+        self.applications = application_manager or ApplicationManager(config)
 
     def _search_settings(self) -> SearchConfig:
         path = search_settings_path(self.config.database_path)
@@ -554,6 +559,12 @@ class JobTelegramBot:
             elif text == SETTINGS_BUTTON or text.startswith("/settings"):
                 self.pending_edits.pop(chat_id, None)
                 self.show_settings(chat_id)
+            elif (
+                chat_id in self.pending_edits
+                and self.pending_edits[chat_id][0] == "application_url"
+                and not text.startswith("/")
+            ):
+                self._prepare_application(chat_id, text)
             elif chat_id in self.pending_edits and not text.startswith("/"):
                 self._apply_edit(chat_id, text)
             else:
@@ -615,6 +626,36 @@ class JobTelegramBot:
                 parts = action.split(":")
                 if len(parts) == 4 and parts[1] == "hh" and parts[2].isdigit():
                     self.show_reply_with_template(chat_id, parts[1], parts[2], parts[3])
+            elif action.startswith("appprep:"):
+                parts = action.split(":")
+                if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
+                    self._begin_application(chat_id, parts[1], parts[2])
+            elif action.startswith("apprefresh:"):
+                parts = action.split(":")
+                if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
+                    try:
+                        self.show_application_review(
+                            chat_id, self.applications.refresh(parts[1], parts[2])
+                        )
+                    except (ApplicationStateError, FormProbeError, PlaywrightError, OSError) as exc:
+                        self.api.send_message(chat_id, f"Не удалось проверить форму: {exc}")
+            elif action.startswith("appclose:"):
+                parts = action.split(":")
+                if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
+                    self.applications.close(parts[1], parts[2])
+                    with VacancyStore(self.config.database_path) as store:
+                        record = store.application(parts[1], parts[2])
+                    if record and record.status == "submitted":
+                        result = "Заявка отправлена."
+                    elif record and record.status == "attempted":
+                        result = "Результат отправки неясен; не повторяйте её без проверки."
+                    else:
+                        result = "Отправки не было."
+                    self.api.send_message(chat_id, f"Окно заявки закрыто. {result}")
+            elif action.startswith("appsubmit:"):
+                parts = action.split(":")
+                if len(parts) == 4 and parts[1] == "hh" and parts[2].isdigit():
+                    self._submit_application(chat_id, parts[1], parts[2], parts[3])
             elif action.startswith("edit:"):
                 parts = action.split(":", 2)
                 if len(parts) == 3:
@@ -651,6 +692,119 @@ class JobTelegramBot:
             f"подошло: {result.accepted_count}.",
         )
         self.show_new(chat_id, 0)
+
+    def _begin_application(self, chat_id: int, source: str, source_id: str) -> None:
+        if self._optional_profile(chat_id) is None:
+            self.api.send_message(chat_id, "Сначала заполните данные для отклика в настройках.")
+            return
+        with VacancyStore(self.config.database_path) as store:
+            if store.get_vacancy(source, source_id) is None:
+                self.api.send_message(chat_id, "Вакансия не найдена в истории.")
+                return
+            record = store.application(source, source_id)
+        if record and record.status in {"attempted", "submitted"}:
+            self.api.send_message(chat_id, "Заявка уже отправлена или результат попытки неясен.")
+            return
+        self.pending_edits[chat_id] = ("application_url", f"{source}:{source_id}")
+        self.api.send_message(
+            chat_id,
+            "Пришлите публичную HTTPS-ссылку на Tilda-форму работодателя. "
+            "Если форм несколько, добавьте через пробел её номер, начиная с 0. "
+            "Для отмены /cancel.",
+        )
+
+    def _prepare_application(self, chat_id: int, text: str) -> None:
+        _, key = self.pending_edits[chat_id]
+        source, source_id = key.split(":", 1)
+        parts = text.strip().rsplit(" ", 1)
+        url = parts[0] if len(parts) == 2 and parts[1].isdigit() else text.strip()
+        form_index = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+        self.api.send_message(chat_id, "Открываю форму и подготавливаю заявку…")
+        try:
+            summary = self.applications.prepare(source, source_id, url, form_index=form_index)
+        except (
+            ApplicationStateError,
+            FormProbeError,
+            FillError,
+            ProfileError,
+            TemplateError,
+            PlaywrightError,
+            OSError,
+        ) as exc:
+            self.api.send_message(
+                chat_id, f"Не удалось подготовить заявку: {_shorten(str(exc), 300)}"
+            )
+            return
+        self.pending_edits.pop(chat_id, None)
+        self.show_application_review(chat_id, summary)
+
+    def show_application_review(self, chat_id: int, summary: ReviewSummary) -> None:
+        missing = ", ".join(summary.missing_required) or "нет"
+        uploaded = summary.uploaded_filename or "нет"
+        buttons = [
+            [
+                {
+                    "text": "🔄 Проверить снова",
+                    "callback_data": f"apprefresh:{summary.source}:{summary.source_id}",
+                }
+            ]
+        ]
+        if not summary.missing_required:
+            buttons.append(
+                [
+                    {
+                        "text": "✅ Отправить эту заявку",
+                        "callback_data": (
+                            f"appsubmit:{summary.source}:{summary.source_id}:{summary.review_id}"
+                        ),
+                    }
+                ]
+            )
+        buttons.append(
+            [
+                {
+                    "text": "✖ Закрыть форму",
+                    "callback_data": f"appclose:{summary.source}:{summary.source_id}",
+                }
+            ]
+        )
+        self.api.send_message(
+            chat_id,
+            f"Заявка подготовлена: {summary.title}\n"
+            f"Форма: {summary.form_url}\n"
+            f"Заполнены поля: {', '.join(summary.filled) or 'нет'}\n"
+            f"Резюме прикреплено: {uploaded}\n"
+            f"Обязательные поля для проверки: {missing}\n"
+            "Проверьте открытую форму в браузере. Снимок и отчёт сохранены локально. "
+            "Заявка ещё не отправлена.",
+            reply_markup={"inline_keyboard": buttons},
+        )
+
+    def _submit_application(
+        self, chat_id: int, source: str, source_id: str, review_id: str
+    ) -> None:
+        try:
+            outcome = self.applications.submit(source, source_id, review_id)
+        except (ApplicationStateError, FormProbeError, PlaywrightError, OSError) as exc:
+            with VacancyStore(self.config.database_path) as store:
+                record = store.application(source, source_id)
+            if record and record.status == "attempted":
+                self.api.send_message(
+                    chat_id,
+                    "Результат отправки неясен. Повторная отправка заблокирована; "
+                    "проверьте страницу и ответ работодателя вручную.",
+                )
+            else:
+                self.api.send_message(chat_id, f"Не отправил: {_shorten(str(exc), 300)}")
+            return
+        if outcome.status == "submitted":
+            self.api.send_message(chat_id, "Сайт подтвердил отправку заявки. Статус сохранён.")
+        else:
+            self.api.send_message(
+                chat_id,
+                "Результат отправки неясен. Повторная отправка заблокирована; "
+                "проверьте страницу и ответ работодателя вручную.",
+            )
 
     def show_reply_choices(self, chat_id: int, source: str, source_id: str) -> None:
         if self._optional_profile(chat_id) is None:
@@ -722,16 +876,26 @@ class JobTelegramBot:
             or len(vacancy.source_id) > 20
         ):
             return None
-        return {
-            "inline_keyboard": [
+        buttons = [
+            [
+                {
+                    "text": "📝 Другой шаблон",
+                    "callback_data": f"reply:hh:{vacancy.source_id}",
+                }
+            ]
+        ]
+        with VacancyStore(self.config.database_path) as store:
+            record = store.application(vacancy.source, vacancy.source_id)
+        if record is None or record.status not in {"attempted", "submitted"}:
+            buttons.append(
                 [
                     {
-                        "text": "📝 Другой шаблон",
-                        "callback_data": f"reply:hh:{vacancy.source_id}",
+                        "text": "📄 Подготовить заявку",
+                        "callback_data": f"appprep:hh:{vacancy.source_id}",
                     }
                 ]
-            ]
-        }
+            )
+        return {"inline_keyboard": buttons}
 
     def show_new(self, chat_id: int, page: int) -> None:
         items = self.new_items.get(chat_id, [])
@@ -818,21 +982,26 @@ def run_bot(config: AppConfig) -> None:
     offset_path = config.database_path.parent / "telegram-offset.json"
     offset = _load_offset(offset_path)
     print("Telegram-бот запущен. Остановить: Ctrl+C.", flush=True)
-    while True:
-        try:
-            updates = api.get_updates(offset)
-        except TelegramApiError as exc:
-            if "Conflict" in str(exc):
-                raise TelegramApiError("Другой экземпляр бота уже запущен") from exc
-            if "Unauthorized" in str(exc):
-                raise TelegramApiError("Telegram отклонил токен бота. Проверьте bot_token") from exc
-            print(f"Telegram недоступен: {exc}. Повтор через 5 секунд.", flush=True)
-            time.sleep(5)
-            continue
-        for update in updates:
+    try:
+        while True:
             try:
-                bot.handle_update(update)
-            except (TelegramApiError, OSError, ValueError) as exc:
-                print(f"Не удалось обработать команду: {exc}", flush=True)
-            offset = int(update["update_id"]) + 1
-            _save_offset(offset_path, offset)
+                updates = api.get_updates(offset)
+            except TelegramApiError as exc:
+                if "Conflict" in str(exc):
+                    raise TelegramApiError("Другой экземпляр бота уже запущен") from exc
+                if "Unauthorized" in str(exc):
+                    raise TelegramApiError(
+                        "Telegram отклонил токен бота. Проверьте bot_token"
+                    ) from exc
+                print(f"Telegram недоступен: {exc}. Повтор через 5 секунд.", flush=True)
+                time.sleep(5)
+                continue
+            for update in updates:
+                try:
+                    bot.handle_update(update)
+                except (TelegramApiError, OSError, ValueError) as exc:
+                    print(f"Не удалось обработать команду: {exc}", flush=True)
+                offset = int(update["update_id"]) + 1
+                _save_offset(offset_path, offset)
+    finally:
+        bot.applications.close_all()
