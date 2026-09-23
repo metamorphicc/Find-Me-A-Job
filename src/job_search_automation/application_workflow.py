@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from playwright.sync_api import Browser, Page, Playwright, sync_playwright
+from playwright.sync_api import Error as PlaywrightError
 
 from job_search_automation.config import AppConfig
 from job_search_automation.forms import (
@@ -39,6 +40,13 @@ class ReviewSummary:
     screenshot_path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class SubmissionOutcome:
+    status: str
+    evidence_path: Path
+    screenshot_path: Path | None
+
+
 @dataclass(slots=True)
 class _Session:
     playwright: Playwright
@@ -58,10 +66,12 @@ class ApplicationManager:
         *,
         headless: bool = False,
         configure_page: Callable[[Page], None] | None = None,
+        success_timeout_ms: int = 15_000,
     ) -> None:
         self.config = config
         self.headless = headless
         self.configure_page = configure_page
+        self.success_timeout_ms = success_timeout_ms
         self.sessions: dict[tuple[str, str], _Session] = {}
 
     def prepare(
@@ -222,6 +232,100 @@ class ApplicationManager:
         session.review_id = review_id
         session.fingerprint = fingerprint
         return summary
+
+    def submit(self, source: str, source_id: str, review_id: str) -> SubmissionOutcome:
+        session = self.sessions.get((source, source_id))
+        if session is None or session.review_id != review_id:
+            raise ApplicationStateError("Отзыв устарел; откройте актуальную проверку заявки")
+        with VacancyStore(self.config.database_path) as store:
+            record = store.application(source, source_id)
+        if record is None or record.status != "review_ready" or record.review_id != review_id:
+            raise ApplicationStateError("Заявка не готова к отправке")
+        current = select_form(inspect_tilda(session.page), session.probe.form_index)
+        if current.url != session.probe.url or current.fields != session.probe.fields:
+            raise ApplicationStateError("Форма изменилась после проверки")
+        fingerprint, missing = self._form_state(session)
+        if missing:
+            raise ApplicationStateError("Остались незаполненные обязательные поля")
+        if fingerprint != session.fingerprint:
+            raise ApplicationStateError("Данные формы изменились; нажмите «Проверить снова»")
+        form = session.page.locator("form.t-form").nth(session.probe.form_index)
+        submit_button = form.locator("button[type=submit], input[type=submit], .t-submit")
+        if submit_button.count() != 1 or not submit_button.first.is_visible():
+            raise ApplicationStateError("Не найдена однозначная кнопка отправки")
+
+        with VacancyStore(self.config.database_path) as store:
+            store.record_attempt(source, source_id, review_id)
+        status = "ambiguous"
+        success_text = ""
+        try:
+            session.page.evaluate("window.__jobApplicationApproved = true")
+            submit_button.click(timeout=10_000)
+            session.page.wait_for_function(
+                """({index, originalUrl}) => {
+                  const form = document.querySelectorAll('form.t-form')[index];
+                  const successBox = Array.from(form?.querySelectorAll('.t-form__successbox') || [])
+                    .some(box => box.getClientRects().length && box.textContent.trim());
+                  const thankYouPage = location.href !== originalUrl &&
+                    /спасибо|thank you|заявка отправлена|application submitted/i
+                      .test(document.body?.innerText || '');
+                  return successBox || thankYouPage;
+                }""",
+                arg={"index": session.probe.form_index, "originalUrl": session.probe.url},
+                timeout=self.success_timeout_ms,
+            )
+            success_text = session.page.evaluate(
+                """index => {
+                  const form = document.querySelectorAll('form.t-form')[index];
+                  const box = Array.from(form?.querySelectorAll('.t-form__successbox') || [])
+                    .find(item => item.getClientRects().length && item.textContent.trim());
+                  if (box) return box.textContent.trim();
+                  return (document.body?.innerText || '')
+                    .match(/спасибо|thank you|заявка отправлена|application submitted/i)?.[0] || '';
+                }""",
+                session.probe.form_index,
+            )
+            if success_text.strip():
+                status = "submitted"
+        except PlaywrightError:
+            # Once the final click was attempted, a missing success signal is ambiguous.
+            status = "ambiguous"
+        finally:
+            try:
+                session.page.evaluate("window.__jobApplicationApproved = false")
+            except PlaywrightError:
+                status = "ambiguous"
+
+        root = self.config.profile_path.resolve().parent
+        slug = f"{source}_{source_id}_{review_id}"
+        evidence_path = root / "artifacts" / "tilda" / f"{slug}_submission.json"
+        screenshot_path = root / "screenshots" / "tilda" / f"{slug}_after_submit.png"
+        try:
+            session.page.screenshot(path=str(screenshot_path), full_page=True)
+        except PlaywrightError:
+            screenshot_path = None
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = evidence_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "source": source,
+                    "source_id": source_id,
+                    "review_id": review_id,
+                    "status": status,
+                    "final_url": session.page.url,
+                    "success_text": success_text[:300],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        os.replace(temporary, evidence_path)
+        if status == "submitted":
+            with VacancyStore(self.config.database_path) as store:
+                store.record_submitted(source, source_id, str(evidence_path))
+        return SubmissionOutcome(status, evidence_path, screenshot_path)
 
     def close(self, source: str, source_id: str) -> None:
         session = self.sessions.pop((source, source_id), None)

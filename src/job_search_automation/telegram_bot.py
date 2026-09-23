@@ -643,7 +643,19 @@ class JobTelegramBot:
                 parts = action.split(":")
                 if len(parts) == 3 and parts[1] == "hh" and parts[2].isdigit():
                     self.applications.close(parts[1], parts[2])
-                    self.api.send_message(chat_id, "Окно заявки закрыто. Отправки не было.")
+                    with VacancyStore(self.config.database_path) as store:
+                        record = store.application(parts[1], parts[2])
+                    if record and record.status == "submitted":
+                        result = "Заявка отправлена."
+                    elif record and record.status == "attempted":
+                        result = "Результат отправки неясен; не повторяйте её без проверки."
+                    else:
+                        result = "Отправки не было."
+                    self.api.send_message(chat_id, f"Окно заявки закрыто. {result}")
+            elif action.startswith("appsubmit:"):
+                parts = action.split(":")
+                if len(parts) == 4 and parts[1] == "hh" and parts[2].isdigit():
+                    self._submit_application(chat_id, parts[1], parts[2], parts[3])
             elif action.startswith("edit:"):
                 parts = action.split(":", 2)
                 if len(parts) == 3:
@@ -729,31 +741,70 @@ class JobTelegramBot:
     def show_application_review(self, chat_id: int, summary: ReviewSummary) -> None:
         missing = ", ".join(summary.missing_required) or "нет"
         uploaded = summary.uploaded_filename or "нет"
+        buttons = [
+            [
+                {
+                    "text": "🔄 Проверить снова",
+                    "callback_data": f"apprefresh:{summary.source}:{summary.source_id}",
+                }
+            ]
+        ]
+        if not summary.missing_required:
+            buttons.append(
+                [
+                    {
+                        "text": "✅ Отправить эту заявку",
+                        "callback_data": (
+                            f"appsubmit:{summary.source}:{summary.source_id}:{summary.review_id}"
+                        ),
+                    }
+                ]
+            )
+        buttons.append(
+            [
+                {
+                    "text": "✖ Закрыть форму",
+                    "callback_data": f"appclose:{summary.source}:{summary.source_id}",
+                }
+            ]
+        )
         self.api.send_message(
             chat_id,
             f"Заявка подготовлена: {summary.title}\n"
+            f"Форма: {summary.form_url}\n"
             f"Заполнены поля: {', '.join(summary.filled) or 'нет'}\n"
             f"Резюме прикреплено: {uploaded}\n"
             f"Обязательные поля для проверки: {missing}\n"
             "Проверьте открытую форму в браузере. Снимок и отчёт сохранены локально. "
             "Заявка ещё не отправлена.",
-            reply_markup={
-                "inline_keyboard": [
-                    [
-                        {
-                            "text": "🔄 Проверить снова",
-                            "callback_data": f"apprefresh:{summary.source}:{summary.source_id}",
-                        }
-                    ],
-                    [
-                        {
-                            "text": "✖ Закрыть форму",
-                            "callback_data": f"appclose:{summary.source}:{summary.source_id}",
-                        }
-                    ],
-                ]
-            },
+            reply_markup={"inline_keyboard": buttons},
         )
+
+    def _submit_application(
+        self, chat_id: int, source: str, source_id: str, review_id: str
+    ) -> None:
+        try:
+            outcome = self.applications.submit(source, source_id, review_id)
+        except (ApplicationStateError, FormProbeError, PlaywrightError, OSError) as exc:
+            with VacancyStore(self.config.database_path) as store:
+                record = store.application(source, source_id)
+            if record and record.status == "attempted":
+                self.api.send_message(
+                    chat_id,
+                    "Результат отправки неясен. Повторная отправка заблокирована; "
+                    "проверьте страницу и ответ работодателя вручную.",
+                )
+            else:
+                self.api.send_message(chat_id, f"Не отправил: {_shorten(str(exc), 300)}")
+            return
+        if outcome.status == "submitted":
+            self.api.send_message(chat_id, "Сайт подтвердил отправку заявки. Статус сохранён.")
+        else:
+            self.api.send_message(
+                chat_id,
+                "Результат отправки неясен. Повторная отправка заблокирована; "
+                "проверьте страницу и ответ работодателя вручную.",
+            )
 
     def show_reply_choices(self, chat_id: int, source: str, source_id: str) -> None:
         if self._optional_profile(chat_id) is None:
