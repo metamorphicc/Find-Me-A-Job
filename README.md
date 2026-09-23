@@ -2,6 +2,8 @@
 
 Local Python application for finding remote vacancies, filtering them, and keeping a private history so the same vacancy is not shown as new twice.
 
+The [project roadmap](ROADMAP.md) tracks completed stages, source availability, and integration work that still needs external access.
+
 The app searches HeadHunter, Remotive, We Work Remotely and Freelancer.com, with optional SuperJob and FL.ru adapters. Configure sources under `search.sources` in `config.toml`. HeadHunter uses its [public API](https://api.hh.ru/openapi/redoc) and can fall back to a local headless Chromium browser. Remotive uses its [public API](https://github.com/remotive-io/remote-jobs-api); We Work Remotely and FL.ru use their RSS feeds. Freelancer.com uses its public active-project API to find freelance work; it does not place bids. SuperJob requires an application key in the `SUPERJOB_APP_KEY` environment variable. A failed source is reported while other sources continue. The FL.ru feed currently returns HTTP 403 from some networks, so leave it disabled until it works from yours.
 
 Candidate profiles, resumes, the search database, generated reports, browser sessions, screenshots, and application history are local-only and excluded from Git.
