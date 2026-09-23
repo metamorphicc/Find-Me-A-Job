@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import tomllib
+from dataclasses import asdict
 from dataclasses import dataclass as dc
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,47 @@ def _bounded_int(value: Any, field: str, minimum: int, maximum: int) -> int:
     return value
 
 
+def search_settings_path(database_path: Path) -> Path:
+    return database_path.parent / "search-settings.json"
+
+
+def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
+    if not path.is_file():
+        return base
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"Cannot read saved search settings: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError("Saved search settings must be a JSON object")
+    queries = _strings(raw.get("queries"), "saved search.queries")
+    if not queries:
+        raise ConfigError("Saved search queries must not be empty")
+    remote_only = raw.get("remote_only")
+    strict_remote = raw.get("strict_remote")
+    if not isinstance(remote_only, bool) or not isinstance(strict_remote, bool):
+        raise ConfigError("Saved remote filters must be true or false")
+    return SearchConfig(
+        queries=queries,
+        excluded_keywords=_strings(raw.get("excluded_keywords"), "saved excluded_keywords"),
+        area_ids=_strings(raw.get("area_ids"), "saved area_ids"),
+        experience_ids=_strings(raw.get("experience_ids"), "saved experience_ids"),
+        remote_only=remote_only,
+        strict_remote=strict_remote,
+        days=_bounded_int(raw.get("days"), "saved days", 1, 30),
+        per_query=_bounded_int(raw.get("per_query"), "saved per_query", 1, 500),
+    )
+
+
+def save_search_settings(settings: SearchConfig, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    os.replace(temporary, path)
+
+
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path)
     if not config_path.is_file():
@@ -97,19 +140,20 @@ def load_config(path: str | Path) -> AppConfig:
     ):
         raise ConfigError("telegram.allowed_user_ids must be a list of positive numbers")
 
-    return AppConfig(
-        search=SearchConfig(
-            queries=queries,
-            excluded_keywords=_strings(
-                search_raw.get("excluded_keywords", []), "search.excluded_keywords"
-            ),
-            area_ids=_strings(search_raw.get("area_ids", ["113"]), "search.area_ids"),
-            experience_ids=_strings(search_raw.get("experience_ids", []), "search.experience_ids"),
-            remote_only=bool(search_raw.get("remote_only", True)),
-            strict_remote=bool(search_raw.get("strict_remote", True)),
-            days=_bounded_int(search_raw.get("days", 7), "search.days", 1, 30),
-            per_query=_bounded_int(search_raw.get("per_query", 50), "search.per_query", 1, 500),
+    search = SearchConfig(
+        queries=queries,
+        excluded_keywords=_strings(
+            search_raw.get("excluded_keywords", []), "search.excluded_keywords"
         ),
+        area_ids=_strings(search_raw.get("area_ids", ["113"]), "search.area_ids"),
+        experience_ids=_strings(search_raw.get("experience_ids", []), "search.experience_ids"),
+        remote_only=bool(search_raw.get("remote_only", True)),
+        strict_remote=bool(search_raw.get("strict_remote", True)),
+        days=_bounded_int(search_raw.get("days", 7), "search.days", 1, 30),
+        per_query=_bounded_int(search_raw.get("per_query", 50), "search.per_query", 1, 500),
+    )
+    return AppConfig(
+        search=load_search_settings(search, search_settings_path(database_path)),
         hh=HhConfig(
             base_url=str(hh_raw.get("base_url", "https://api.hh.ru")).rstrip("/"),
             user_agent=str(hh_raw.get("user_agent", "JobSearchAutomation/0.1")),

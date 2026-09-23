@@ -1,6 +1,16 @@
 import json
+from dataclasses import replace
 
-from job_search_automation.config import AppConfig, HhConfig, SearchConfig, TelegramConfig
+from job_search_automation.config import (
+    AppConfig,
+    HhConfig,
+    SearchConfig,
+    TelegramConfig,
+    load_config,
+    load_search_settings,
+    save_search_settings,
+    search_settings_path,
+)
 from job_search_automation.models import Vacancy
 from job_search_automation.search import ScanResult
 from job_search_automation.storage import VacancyStore
@@ -199,3 +209,103 @@ def test_old_vacancies_are_paginated_from_local_database(tmp_path) -> None:
     cards = [text for _, text, _, mode in api.messages if mode]
     assert len(cards) == 2
     assert "https://hh.ru/vacancy/" in cards[1]
+
+
+def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    used_searches = []
+
+    def scan(current):
+        used_searches.append(current.search)
+        return ScanResult([], 0, 0, "api")
+
+    bot = JobTelegramBot(settings, api, scanner=scan)
+    bot.handle_update(message("/settings"))
+    assert "settings:search" in str(api.messages[-1][2])
+
+    bot.handle_update(callback("edit:search:queries"))
+    bot.handle_update(message("Python-разработчик, backend стажёр"))
+    bot.handle_update(callback("toggle:remote"))
+    bot.handle_update(callback("set:days:14"))
+    bot.handle_update(callback("set:experience:entry"))
+    bot.handle_update(message("/scan"))
+
+    assert used_searches[0].queries == ("Python-разработчик", "backend стажёр")
+    assert used_searches[0].remote_only is False
+    assert used_searches[0].strict_remote is False
+    assert used_searches[0].days == 14
+    assert used_searches[0].experience_ids == ("noExperience",)
+    saved = load_search_settings(settings.search, search_settings_path(settings.database_path))
+    assert saved == used_searches[0]
+
+
+def test_bot_edits_candidate_profile_and_fills_history_reply(tmp_path) -> None:
+    settings = config(tmp_path)
+    with VacancyStore(settings.database_path) as store:
+        store.save([vacancy()])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(callback("edit:profile:name"))
+    bot.handle_update(message("Иван"))
+    bot.handle_update(callback("edit:profile:about"))
+    bot.handle_update(message("Изучаю Python и делал учебные проекты."))
+    bot.handle_update(callback("edit:profile:contact"))
+    bot.handle_update(message("@candidate"))
+    bot.handle_update(callback("edit:profile:skills"))
+    bot.handle_update(message("Python, SQL"))
+    bot.handle_update(callback("edit:profile:resume_url"))
+    bot.handle_update(message("https://example.test/resume"))
+    bot.handle_update(message("/history"))
+
+    card = [text for _, text, _, mode in api.messages if mode][-1]
+    assert "Готовый текст отклика" in card
+    assert "Иван" in card
+    assert "@candidate" in card
+    assert "Python, SQL" in card
+    assert "https://example.test/resume" in card
+    assert json.loads(settings.profile_path.read_text(encoding="utf-8"))["name"] == "Иван"
+
+
+def test_invalid_filter_edit_keeps_previous_settings(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(callback("edit:search:queries"))
+    bot.handle_update(message("-"))
+
+    assert "Не сохранил" in api.messages[-1][1]
+    assert bot.pending_edits[42] == ("search", "queries")
+    assert bot._search_settings().queries == ("junior",)
+    bot.handle_update(message("/cancel"))
+    assert 42 not in bot.pending_edits
+
+
+def test_unauthorized_user_cannot_edit_search_settings(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+    update = callback("toggle:remote")
+    update["callback_query"]["from"]["id"] = 99
+    update["callback_query"]["message"]["chat"]["id"] = 99
+
+    bot.handle_update(update)
+
+    assert bot._search_settings().remote_only is True
+    assert not search_settings_path(settings.database_path).exists()
+    assert api.callbacks == [("callback-1", "Нет доступа")]
+
+
+def test_saved_bot_filters_are_loaded_by_cli_config_after_restart(tmp_path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[search]\nqueries = ["junior"]\n', encoding="utf-8")
+    original = load_config(config_path)
+    updated = replace(original.search, queries=("Python",), days=14)
+    save_search_settings(updated, search_settings_path(original.database_path))
+
+    restarted = load_config(config_path)
+
+    assert restarted.search.queries == ("Python",)
+    assert restarted.search.days == 14

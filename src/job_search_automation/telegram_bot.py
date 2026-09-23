@@ -3,27 +3,56 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import requests
 from playwright.sync_api import Error as PlaywrightError
 
-from job_search_automation.config import AppConfig, ConfigError
+from job_search_automation.config import (
+    AppConfig,
+    ConfigError,
+    SearchConfig,
+    load_search_settings,
+    save_search_settings,
+    search_settings_path,
+)
 from job_search_automation.hh import HhApiError
 from job_search_automation.models import Vacancy
-from job_search_automation.profile import CandidateProfile, ProfileError, load_profile
+from job_search_automation.profile import (
+    EDITABLE_FIELDS,
+    CandidateProfile,
+    ProfileError,
+    load_profile,
+    read_profile_fields,
+    save_profile_field,
+)
 from job_search_automation.reporting import _salary
 from job_search_automation.search import ScanResult, scan_vacancies
 from job_search_automation.storage import VacancyStore
 
 SEARCH_BUTTON = "🔎 Искать вакансии"
 HISTORY_BUTTON = "📚 Ранее найденные"
+SETTINGS_BUTTON = "⚙️ Настройки"
 MAIN_KEYBOARD = {
-    "keyboard": [[{"text": SEARCH_BUTTON}, {"text": HISTORY_BUTTON}]],
+    "keyboard": [
+        [{"text": SEARCH_BUTTON}, {"text": HISTORY_BUTTON}],
+        [{"text": SETTINGS_BUTTON}],
+    ],
     "resize_keyboard": True,
+}
+
+PROFILE_LABELS = {
+    "name": "Имя",
+    "about": "О себе",
+    "contact": "Контакт",
+    "skills": "Навыки",
+    "resume_url": "Ссылка на резюме",
+    "portfolio_url": "Ссылка на портфолио",
 }
 
 
@@ -125,9 +154,242 @@ class JobTelegramBot:
         self.api = api
         self.scanner = scanner
         self.new_items: dict[int, list[Vacancy]] = {}
+        self.pending_edits: dict[int, tuple[str, str]] = {}
+
+    def _search_settings(self) -> SearchConfig:
+        path = search_settings_path(self.config.database_path)
+        return load_search_settings(self.config.search, path)
+
+    def _save_search_settings(self, **changes: Any) -> None:
+        updated = replace(self._search_settings(), **changes)
+        save_search_settings(updated, search_settings_path(self.config.database_path))
+
+    def show_settings(self, chat_id: int) -> None:
+        self.api.send_message(
+            chat_id,
+            "Что изменить? Настройки поиска применяются к следующему запуску. "
+            "Профиль для отклика можно оставить пустым.",
+            reply_markup={
+                "inline_keyboard": [
+                    [{"text": "🔎 Фильтры поиска", "callback_data": "settings:search"}],
+                    [{"text": "📝 Данные для отклика", "callback_data": "settings:profile"}],
+                ]
+            },
+        )
+
+    def show_search_settings(self, chat_id: int) -> None:
+        try:
+            settings = self._search_settings()
+        except ConfigError as exc:
+            self.api.send_message(chat_id, f"Не удалось прочитать фильтры: {exc}")
+            return
+        experience = {
+            (): "любой",
+            ("noExperience",): "без опыта",
+            ("between1And3",): "1–3 года",
+            ("noExperience", "between1And3"): "без опыта и 1–3 года",
+        }.get(settings.experience_ids, ", ".join(settings.experience_ids))
+        area = (
+            "вся Россия"
+            if settings.area_ids == ("113",)
+            else ", ".join(settings.area_ids) or "без ограничения"
+        )
+        self.api.send_message(
+            chat_id,
+            "Фильтры поиска:\n"
+            f"Запросы: {', '.join(settings.queries)}\n"
+            f"Удалённо: {'да' if settings.remote_only else 'нет'}\n"
+            f"Только полностью удалённо: {'да' if settings.strict_remote else 'нет'}\n"
+            f"Опыт: {experience}\n"
+            f"Регион: {area}\n"
+            f"Опубликовано за: {settings.days} дн.\n"
+            f"На каждый запрос: {settings.per_query}\n"
+            f"Исключить слова: {', '.join(settings.excluded_keywords) or 'нет'}",
+            reply_markup={
+                "inline_keyboard": [
+                    [{"text": "Запросы", "callback_data": "edit:search:queries"}],
+                    [
+                        {
+                            "text": "Удалённо ✓" if settings.remote_only else "Удалённо ○",
+                            "callback_data": "toggle:remote",
+                        },
+                        {
+                            "text": "Строго ✓" if settings.strict_remote else "Строго ○",
+                            "callback_data": "toggle:strict",
+                        },
+                    ],
+                    [
+                        {"text": "Опыт", "callback_data": "choose:experience"},
+                        {"text": "Регион", "callback_data": "choose:area"},
+                    ],
+                    [
+                        {"text": "Давность", "callback_data": "choose:days"},
+                        {"text": "Лимит", "callback_data": "choose:limit"},
+                    ],
+                    [{"text": "Исключить слова", "callback_data": "edit:search:excluded_keywords"}],
+                    [{"text": "← Настройки", "callback_data": "settings"}],
+                ]
+            },
+        )
+
+    def show_profile_settings(self, chat_id: int) -> None:
+        try:
+            fields = read_profile_fields(self.config.profile_path)
+            try:
+                load_profile(self.config.profile_path)
+                readiness = "Готовый текст отклика включён."
+            except ProfileError:
+                readiness = "Текст отклика пока не готов; поиск работает без него."
+        except ProfileError as exc:
+            self.api.send_message(chat_id, f"Не удалось прочитать профиль: {exc}")
+            return
+        display = []
+        for field, label in PROFILE_LABELS.items():
+            value = fields.get(field)
+            if isinstance(value, list):
+                value = ", ".join(str(item) for item in value)
+            display.append(f"{label}: {_shorten(str(value or 'не указано'), 100)}")
+        buttons = [
+            [{"text": label, "callback_data": f"edit:profile:{field}"}]
+            for field, label in PROFILE_LABELS.items()
+        ]
+        buttons.append([{"text": "← Настройки", "callback_data": "settings"}])
+        self.api.send_message(
+            chat_id,
+            f"{readiness}\n" + "\n".join(display),
+            reply_markup={"inline_keyboard": buttons},
+        )
+
+    def _begin_edit(self, chat_id: int, kind: str, field: str) -> None:
+        if kind == "profile" and field in EDITABLE_FIELDS:
+            label = PROFILE_LABELS[field]
+            extra = " Навыки перечислите через запятую." if field == "skills" else ""
+            extra += (
+                " Отправьте '-' для очистки."
+                if field in {"skills", "resume_url", "portfolio_url"}
+                else ""
+            )
+        elif kind == "search" and field in {"queries", "excluded_keywords", "area_ids"}:
+            label = {
+                "queries": "Поисковые запросы",
+                "excluded_keywords": "Исключаемые слова",
+                "area_ids": "ID регионов HeadHunter",
+            }[field]
+            extra = " Перечислите через запятую или с новой строки."
+            if field != "queries":
+                extra += " Отправьте '-' для очистки."
+        else:
+            return
+        self.pending_edits[chat_id] = (kind, field)
+        self.api.send_message(
+            chat_id, f"Пришлите новое значение: {label}.{extra} Для отмены /cancel."
+        )
+
+    def _apply_edit(self, chat_id: int, text: str) -> None:
+        kind, field = self.pending_edits[chat_id]
+        try:
+            if kind == "profile":
+                save_profile_field(self.config.profile_path, field, text)
+            else:
+                items = tuple(item.strip() for item in re.split(r"[,;\n]", text) if item.strip())
+                if text.strip() == "-":
+                    items = ()
+                if field == "queries" and not items:
+                    raise ConfigError("Укажите хотя бы один поисковый запрос")
+                if len(items) > (10 if field == "queries" else 30) or any(
+                    len(item) > 80 for item in items
+                ):
+                    raise ConfigError("Слишком много значений или слишком длинный текст")
+                if field == "area_ids" and any(not item.isdigit() for item in items):
+                    raise ConfigError("Для региона нужны числовые ID HeadHunter")
+                self._save_search_settings(**{field: items})
+        except (ConfigError, ProfileError, OSError) as exc:
+            self.api.send_message(chat_id, f"Не сохранил: {exc}. Попробуйте ещё раз или /cancel.")
+            return
+        del self.pending_edits[chat_id]
+        self.api.send_message(chat_id, "Сохранено.")
+        if kind == "profile":
+            self.show_profile_settings(chat_id)
+        else:
+            self.show_search_settings(chat_id)
+
+    def _show_choices(self, chat_id: int, choice: str) -> None:
+        if choice == "experience":
+            buttons = [
+                [{"text": "Любой опыт", "callback_data": "set:experience:any"}],
+                [{"text": "Без опыта", "callback_data": "set:experience:entry"}],
+                [{"text": "1–3 года", "callback_data": "set:experience:one_three"}],
+                [{"text": "Без опыта + 1–3 года", "callback_data": "set:experience:junior"}],
+            ]
+        elif choice == "area":
+            buttons = [
+                [{"text": "Вся Россия", "callback_data": "set:area:ru"}],
+                [{"text": "Без ограничения", "callback_data": "set:area:any"}],
+                [{"text": "Ввести ID регионов", "callback_data": "edit:search:area_ids"}],
+            ]
+        elif choice == "days":
+            buttons = [
+                [{"text": f"{days} дн.", "callback_data": f"set:days:{days}"}]
+                for days in (3, 7, 14, 30)
+            ]
+        elif choice == "limit":
+            buttons = [
+                [{"text": str(limit), "callback_data": f"set:limit:{limit}"}]
+                for limit in (20, 50, 100)
+            ]
+        else:
+            return
+        buttons.append([{"text": "← Фильтры", "callback_data": "settings:search"}])
+        self.api.send_message(
+            chat_id, "Выберите значение:", reply_markup={"inline_keyboard": buttons}
+        )
+
+    def _apply_choice(self, chat_id: int, action: str) -> None:
+        try:
+            settings = self._search_settings()
+            if action == "toggle:remote":
+                enabled = not settings.remote_only
+                self._save_search_settings(remote_only=enabled, strict_remote=enabled)
+            elif action == "toggle:strict":
+                enabled = not settings.strict_remote
+                self._save_search_settings(strict_remote=enabled, remote_only=True)
+            elif action.startswith("set:experience:"):
+                values = {
+                    "any": (),
+                    "entry": ("noExperience",),
+                    "one_three": ("between1And3",),
+                    "junior": ("noExperience", "between1And3"),
+                }
+                choice = action.removeprefix("set:experience:")
+                if choice not in values:
+                    return
+                self._save_search_settings(experience_ids=values[choice])
+            elif action == "set:area:ru":
+                self._save_search_settings(area_ids=("113",))
+            elif action == "set:area:any":
+                self._save_search_settings(area_ids=())
+            elif action.startswith("set:days:") and action.removeprefix("set:days:") in {
+                "3",
+                "7",
+                "14",
+                "30",
+            }:
+                self._save_search_settings(days=int(action.removeprefix("set:days:")))
+            elif action.startswith("set:limit:") and action.removeprefix("set:limit:") in {
+                "20",
+                "50",
+                "100",
+            }:
+                self._save_search_settings(per_query=int(action.removeprefix("set:limit:")))
+            else:
+                return
+        except (ConfigError, OSError) as exc:
+            self.api.send_message(chat_id, f"Не сохранил фильтр: {exc}")
+            return
+        self.show_search_settings(chat_id)
 
     def _allowed(self, user_id: int, chat_id: int, chat_type: str) -> bool:
-        if chat_type != "private":
+        if chat_type != "private" or chat_id != user_id:
             return False
         if user_id not in self.config.telegram.allowed_user_ids:
             self.api.send_message(
@@ -168,21 +430,35 @@ class JobTelegramBot:
                 return
             if not self._allowed(user_id, chat_id, "private"):
                 return
-            if text.startswith("/start"):
+            if text == "/cancel":
+                self.pending_edits.pop(chat_id, None)
+                self.api.send_message(
+                    chat_id, "Редактирование отменено.", reply_markup=MAIN_KEYBOARD
+                )
+            elif text.startswith("/start"):
+                self.pending_edits.pop(chat_id, None)
                 self.api.send_message(
                     chat_id,
                     "Нажмите «Искать вакансии», чтобы проверить новые подходящие позиции. "
-                    "История хранится на этом компьютере. Личный текст отклика можно "
-                    "добавить позже через profile.json — для поиска он не нужен.",
+                    "В настройках можно изменить фильтры и данные для отклика.",
                     reply_markup=MAIN_KEYBOARD,
                 )
             elif text == SEARCH_BUTTON or text.startswith("/scan"):
+                self.pending_edits.pop(chat_id, None)
                 self.scan(chat_id)
             elif text == HISTORY_BUTTON or text.startswith("/history"):
+                self.pending_edits.pop(chat_id, None)
                 self.show_history(chat_id, 0)
+            elif text == SETTINGS_BUTTON or text.startswith("/settings"):
+                self.pending_edits.pop(chat_id, None)
+                self.show_settings(chat_id)
+            elif chat_id in self.pending_edits and not text.startswith("/"):
+                self._apply_edit(chat_id, text)
             else:
                 self.api.send_message(
-                    chat_id, "Используйте кнопки поиска и истории.", reply_markup=MAIN_KEYBOARD
+                    chat_id,
+                    "Используйте кнопки поиска, истории и настроек.",
+                    reply_markup=MAIN_KEYBOARD,
                 )
             return
 
@@ -195,6 +471,7 @@ class JobTelegramBot:
                 return
             if (
                 chat.get("type") != "private"
+                or chat_id != user_id
                 or user_id not in self.config.telegram.allowed_user_ids
             ):
                 self.api.answer_callback(callback_id, "Нет доступа")
@@ -202,17 +479,36 @@ class JobTelegramBot:
             self.api.answer_callback(callback_id)
             action = str(callback.get("data") or "")
             if action == "scan":
+                self.pending_edits.pop(chat_id, None)
                 self.scan(chat_id)
             elif action.startswith("new:") and action[4:].isdigit():
                 self.show_new(chat_id, int(action[4:]))
             elif action.startswith("history:") and action[8:].isdigit():
                 self.show_history(chat_id, int(action[8:]))
+            elif action == "settings":
+                self.pending_edits.pop(chat_id, None)
+                self.show_settings(chat_id)
+            elif action == "settings:search":
+                self.pending_edits.pop(chat_id, None)
+                self.show_search_settings(chat_id)
+            elif action == "settings:profile":
+                self.pending_edits.pop(chat_id, None)
+                self.show_profile_settings(chat_id)
+            elif action.startswith("edit:"):
+                parts = action.split(":", 2)
+                if len(parts) == 3:
+                    self._begin_edit(chat_id, parts[1], parts[2])
+            elif action.startswith("choose:"):
+                self._show_choices(chat_id, action.removeprefix("choose:"))
+            elif action.startswith(("toggle:", "set:")):
+                self._apply_choice(chat_id, action)
 
     def scan(self, chat_id: int) -> None:
-        self.api.send_message(chat_id, "Ищу вакансии по настройкам из config.toml…")
+        self.api.send_message(chat_id, "Ищу вакансии по сохранённым фильтрам…")
         try:
-            result = self.scanner(self.config)
-        except (HhApiError, PlaywrightError, OSError) as exc:
+            current_config = replace(self.config, search=self._search_settings())
+            result = self.scanner(current_config)
+        except (ConfigError, HhApiError, PlaywrightError, OSError) as exc:
             self.api.send_message(chat_id, f"Поиск не удался: {_shorten(str(exc), 300)}")
             return
         self.new_items[chat_id] = result.new_items

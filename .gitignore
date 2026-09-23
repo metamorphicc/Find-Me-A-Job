@@ -8,6 +8,7 @@ __pycache__/
 # Local secrets and candidate data
 .env
 profile.json
+profile.json.tmp
 config.toml
 APPLICATIONS_LEDGER.md
 resumes/
