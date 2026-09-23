@@ -10,6 +10,12 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from job_search_automation.config import ConfigError, load_config
+from job_search_automation.forms import (
+    FormProbeError,
+    inspect_tilda,
+    select_form,
+    validate_form_url,
+)
 from job_search_automation.hh import HhApiError
 from job_search_automation.reporting import write_report
 from job_search_automation.search import scan_vacancies
@@ -74,6 +80,20 @@ def _list(config_path: Path, limit: int) -> int:
     return 0
 
 
+def _probe(url: str, form_index: int | None) -> int:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(validate_form_url(url), wait_until="domcontentloaded", timeout=30_000)
+            probes = inspect_tilda(page)
+            selected = select_form(probes, form_index)
+            print(json.dumps(selected.to_dict(), ensure_ascii=False, indent=2))
+        finally:
+            browser.close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local remote-job discovery")
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
@@ -84,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = commands.add_parser("list", help="Show recently discovered vacancies")
     list_parser.add_argument("--limit", type=int, default=20)
     commands.add_parser("bot", help="Run the private Telegram bot until Ctrl+C")
+    probe_parser = commands.add_parser(
+        "form-probe", help="Inspect a live Tilda form without filling"
+    )
+    probe_parser.add_argument("url")
+    probe_parser.add_argument("--form-index", type=int)
     return parser
 
 
@@ -102,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "bot":
             run_bot(load_config(args.config))
             return 0
+        if args.command == "form-probe":
+            return _probe(args.url, args.form_index)
     except KeyboardInterrupt:
         print("\nTelegram-бот остановлен.")
         return 0
@@ -112,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except (ConfigError, HhApiError, TelegramApiError, OSError) as exc:
+    except (ConfigError, FormProbeError, HhApiError, TelegramApiError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2
