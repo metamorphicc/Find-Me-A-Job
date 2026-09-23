@@ -9,7 +9,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 
 class FormProbeError(ValueError):
-    """Raised when the destination is not a safely inspectable Tilda form."""
+    """Raised when the destination is not a safely inspectable application form."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +29,7 @@ class FormProbe:
     has_submit: bool
     has_uploadcare: bool
     has_file_input: bool
+    family: str = "tilda"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -99,9 +100,47 @@ def inspect_tilda(page: Page) -> tuple[FormProbe, ...]:
     )
 
 
+def inspect_forms(page: Page) -> tuple[FormProbe, ...]:
+    if page.locator("form.t-form").count():
+        return inspect_tilda(page)
+    raw = page.evaluate(
+        r"""() => Array.from(document.querySelectorAll('form')).map((form, formIndex) => {
+          const controls = Array.from(form.querySelectorAll('input, textarea, select'));
+          const fields = controls.map((input, index) => ({
+            index,
+            name: input.getAttribute('name') || '',
+            kind: (input.getAttribute('type') || input.tagName.toLowerCase()).toLowerCase(),
+            label: (Array.from(input.labels || []).map(x => x.textContent).join(' ') ||
+              input.getAttribute('aria-label') || input.getAttribute('placeholder') || '').
+              trim().replace(/\s+/g, ' '),
+            required: input.required
+          })).filter(field => !['hidden', 'submit', 'button'].includes(field.kind));
+          return {
+            url: location.href, form_index: formIndex, fields,
+            has_submit: Array.from(form.querySelectorAll(
+              'button[type=submit], input[type=submit], button:not([type])')).some(button =>
+                /apply|отклик|отправ|submit|send|заявк/i.test(
+                  button.innerText || button.value || button.getAttribute('aria-label') || '')),
+            has_file_input: fields.some(field => field.kind === 'file'),
+            has_password: fields.some(field => field.kind === 'password')
+          };
+        }).filter(form => form.has_submit && !form.has_password && form.fields.length >= 2)"""
+    )
+    return tuple(
+        FormProbe(
+            url=validate_form_url(item["url"]),
+            form_index=item["form_index"],
+            fields=tuple(FormField(**field) for field in item["fields"]),
+            has_submit=item["has_submit"],
+            has_uploadcare=False,
+            has_file_input=item["has_file_input"],
+            family="standard",
+        )
+        for item in raw
+    )
 def select_form(probes: tuple[FormProbe, ...], form_index: int | None = None) -> FormProbe:
     if not probes:
-        raise FormProbeError("На странице не найдена Tilda-форма")
+        raise FormProbeError("На странице не найдена поддерживаемая форма")
     if form_index is None:
         if len(probes) != 1:
             raise FormProbeError("На странице несколько форм; укажите индекс нужной формы")

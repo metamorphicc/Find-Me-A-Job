@@ -238,3 +238,36 @@ def test_thank_you_redirect_is_accepted_as_success(tmp_path) -> None:
         )
     finally:
         manager.close_all()
+
+
+def test_generic_form_is_filled_and_submitted_only_after_review(tmp_path) -> None:
+    settings = config(tmp_path)
+    write_profile(settings.profile_path)
+    profile_fields = json.loads(settings.profile_path.read_text(encoding="utf-8"))
+    profile_fields["email"] = "test@example.test"
+    settings.profile_path.write_text(json.dumps(profile_fields), encoding="utf-8")
+    with VacancyStore(settings.database_path) as store:
+        store.save([vacancy()])
+    html = """
+    <form onsubmit="window.sent = true; this.hidden = true;
+        document.getElementById('thanks').hidden = false; return false;">
+      <input name="Name" required><input name="Email" type="email" required>
+      <button type="submit">Apply</button>
+    </form>
+    <p id="thanks" hidden>Thank you for your application</p>
+    """
+
+    def configure_page(page):
+        page.route("**/*", lambda route: route.fulfill(body=html, content_type="text/html"))
+
+    manager = ApplicationManager(settings, headless=True, configure_page=configure_page)
+    try:
+        review = manager.prepare("hh", "123", "https://example.test/apply")
+        page = manager.sessions[("hh", "123")].page
+        assert page.evaluate("window.sent === true") is False
+        assert review.missing_required == ()
+        outcome = manager.submit("hh", "123", review.review_id)
+        assert outcome.status == "submitted"
+        assert page.evaluate("window.sent === true") is True
+    finally:
+        manager.close_all()

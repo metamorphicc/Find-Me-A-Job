@@ -50,15 +50,15 @@ To inspect the most recently stored vacancies:
 
 The scan command discovers vacancies. It does not log in to HeadHunter or submit applications.
 
-To inspect an employer's Tilda form without filling or submitting it, run:
+To inspect a public employer form without filling or submitting it, run:
 
 ```powershell
 .\.venv\Scripts\job-search.exe form-probe https://example.com/application
 ```
 
-The command reports the form's fields and whether it has a submit control and file upload. If a page has several Tilda forms, pass `--form-index N` after identifying the correct one. The form URL must use public HTTPS.
+The command reports the form's fields and whether it has a submit control and file upload. It handles Tilda and simple standard HTML forms. If a page has several forms, pass `--form-index N` after identifying the correct one. The form URL must use public HTTPS.
 
-In the bot, open a vacancy card and press **📄 Подготовить заявку**, then send the employer's public HTTPS Tilda-form URL. The bot opens a visible browser on the same computer, fills only known profile fields, attaches the local résumé when the form has an upload field, and leaves unknown required fields and consents for you. Uploadcare transfers the résumé to the employer form's configured account during this preparation step. Review the form in the browser; the bot records a screenshot under ignored `screenshots/` and a value-free review summary under ignored `artifacts/`. After manual corrections, press **🔄 Проверить снова**. When no required fields are missing, **✅ Отправить эту заявку** approves that exact reviewed form and clicks its final submit control once. The bot marks success only if the Tilda success message appears. An unclear result blocks another attempt until you check it manually. The bot must stay running to keep the browser session alive. HH-native forms, logins, OTP and CAPTCHA are not automated.
+In the bot, open an opportunity card and press **📄 Подготовить заявку**. Press **🔎 Найти форму** to inspect its original page for an explicit application link, or send the employer's public HTTPS form URL yourself. The bot opens a visible browser on the same computer, fills known text fields from the chosen template and profile, attaches the local résumé when there is a file input, and leaves unknown required fields, selections and consents for you. Uploadcare transfers the résumé to the employer form's configured account during Tilda preparation. Review the form in the browser; the bot records a screenshot under ignored `screenshots/` and a value-free review summary under ignored `artifacts/`. After manual corrections, press **🔄 Проверить снова**. When no required fields are missing, **✅ Отправить эту заявку** approves that exact reviewed form and clicks its final submit control once. The bot marks success only when a supported on-page confirmation appears. An unclear result blocks another attempt until you check it manually. The bot must stay running to keep the browser session alive. Login, OTP, CAPTCHA and complex custom application widgets still require manual work.
 
 ## Telegram bot
 

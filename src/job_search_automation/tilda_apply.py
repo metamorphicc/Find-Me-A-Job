@@ -162,7 +162,8 @@ def fill_tilda(
     *,
     uploader: Callable[[Page, Locator, Path], None] = uploadcare_attach,
 ) -> FillResult:
-    form = page.locator("form.t-form").nth(probe.form_index)
+    selector = "form.t-form" if probe.family == "tilda" else "form"
+    form = page.locator(selector).nth(probe.form_index)
     if form.count() != 1 or page.url != probe.url:
         raise FillError("Форма изменилась после проверки")
     reply = render_reply(profile, vacancy, template)

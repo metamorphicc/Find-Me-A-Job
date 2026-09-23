@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright
 from job_search_automation.config import ConfigError, load_config
 from job_search_automation.forms import (
     FormProbeError,
-    inspect_tilda,
+    inspect_forms,
     select_form,
     validate_form_url,
 )
@@ -87,7 +87,7 @@ def _probe(url: str, form_index: int | None) -> int:
         try:
             page = browser.new_page()
             page.goto(validate_form_url(url), wait_until="domcontentloaded", timeout=30_000)
-            probes = inspect_tilda(page)
+            probes = inspect_forms(page)
             selected = select_form(probes, form_index)
             print(json.dumps(selected.to_dict(), ensure_ascii=False, indent=2))
         finally:
@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--limit", type=int, default=20)
     commands.add_parser("bot", help="Run the private Telegram bot until Ctrl+C")
     probe_parser = commands.add_parser(
-        "form-probe", help="Inspect a live Tilda form without filling"
+        "form-probe", help="Inspect a live application form without filling"
     )
     probe_parser.add_argument("url")
     probe_parser.add_argument("--form-index", type=int)

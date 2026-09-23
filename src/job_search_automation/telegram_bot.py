@@ -22,6 +22,7 @@ from job_search_automation.config import (
     save_search_settings,
     search_settings_path,
 )
+from job_search_automation.discover import discover_application_links
 from job_search_automation.forms import FormProbeError
 from job_search_automation.hh import HhApiError
 from job_search_automation.models import Vacancy
@@ -747,6 +748,10 @@ class JobTelegramBot:
                 parts = action.split(":")
                 if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
                     self._begin_application(chat_id, parts[1], parts[2])
+            elif action.startswith("appfind:"):
+                parts = action.split(":")
+                if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
+                    self._discover_application(chat_id, parts[1], parts[2])
             elif action.startswith("apprefresh:"):
                 parts = action.split(":")
                 if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
@@ -827,10 +832,44 @@ class JobTelegramBot:
         self.pending_edits[chat_id] = ("application_url", f"{source}:{source_id}")
         self.api.send_message(
             chat_id,
-            "Пришлите публичную HTTPS-ссылку на Tilda-форму работодателя. "
+            "Можно попробовать найти анкету по ссылке вакансии либо прислать "
+            "публичную HTTPS-ссылку на форму. "
             "Если форм несколько, добавьте через пробел её номер, начиная с 0. "
             "Для отмены /cancel.",
+            reply_markup={
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "🔎 Найти форму",
+                            "callback_data": f"appfind:{source}:{source_id}",
+                        }
+                    ]
+                ]
+            },
         )
+
+    def _discover_application(self, chat_id: int, source: str, source_id: str) -> None:
+        with VacancyStore(self.config.database_path) as store:
+            vacancy = store.get_vacancy(source, source_id)
+        if vacancy is None:
+            self.api.send_message(chat_id, "Предложение не найдено в истории.")
+            return
+        try:
+            links = discover_application_links(vacancy.url)
+        except (FormProbeError, PlaywrightError, OSError) as exc:
+            self.api.send_message(chat_id, f"Не удалось проверить ссылку: {_shorten(str(exc), 300)}")
+            return
+        if not links:
+            self.api.send_message(chat_id, "Явную форму не нашёл. Пришлите её ссылку вручную.")
+        elif len(links) == 1:
+            self.pending_edits[chat_id] = ("application_url", f"{source}:{source_id}")
+            self._prepare_application(chat_id, links[0])
+        else:
+            self.api.send_message(
+                chat_id,
+                "Найдено несколько возможных ссылок. Откройте нужную и пришлите её мне:\n"
+                + "\n".join(links),
+            )
 
     def _prepare_application(self, chat_id: int, text: str) -> None:
         _, key = self.pending_edits[chat_id]
