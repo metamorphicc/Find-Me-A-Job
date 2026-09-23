@@ -12,6 +12,7 @@ from job_search_automation.config import (
     search_settings_path,
 )
 from job_search_automation.models import Vacancy
+from job_search_automation.reply_templates import load_templates, templates_path
 from job_search_automation.search import ScanResult
 from job_search_automation.storage import VacancyStore
 from job_search_automation.telegram_bot import MAIN_KEYBOARD, JobTelegramBot
@@ -256,6 +257,56 @@ def test_settings_back_returns_to_main_menu(tmp_path) -> None:
     assert bot.pending_edits == {}
     assert api.messages[-1][2] == MAIN_KEYBOARD
     assert "Главное меню" in api.messages[-1][1]
+
+
+def test_bot_edits_role_template_and_uses_it_for_new_and_old_vacancies(tmp_path) -> None:
+    settings = config(tmp_path)
+    write_profile(settings.profile_path)
+    api = FakeApi()
+
+    def scan(_):
+        with VacancyStore(settings.database_path) as store:
+            new_items = store.save([vacancy()])
+        return ScanResult(new_items, 1, 1, "api")
+
+    bot = JobTelegramBot(settings, api, scanner=scan)
+    bot.handle_update(message("/settings"))
+    assert "templates" in str(api.messages[-1][2])
+
+    bot.handle_update(callback("templates"))
+    bot.handle_update(callback("templates:python"))
+    bot.handle_update(callback("edit:template:python:body"))
+    bot.handle_update(message("Здравствуйте, я {name}. {about} {contact_line}"))
+
+    path = templates_path(settings.database_path)
+    assert path.is_file()
+    assert next(item for item in load_templates(path) if item.key == "python").body.startswith(
+        "Здравствуйте, я"
+    )
+
+    bot.handle_update(message("/scan"))
+    card = next(text for _, text, _, mode in api.messages if mode)
+    assert "Шаблон: Python" in card
+    assert "Здравствуйте, я Иван" in card
+    assert "https://hh.ru/vacancy/123" in card
+
+    bot.handle_update(message("/history"))
+    historical_card = [text for _, text, _, mode in api.messages if mode][-1]
+    assert "Шаблон: Python" in historical_card
+    assert "Здравствуйте, я Иван" in historical_card
+
+
+def test_invalid_template_edit_keeps_previous_text(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(callback("edit:template:python:body"))
+    bot.handle_update(message("{unknown}"))
+
+    assert "Не сохранил" in api.messages[-1][1]
+    assert bot.pending_edits[42] == ("template", "python:body")
+    assert not templates_path(settings.database_path).exists()
 
 
 def test_bot_edits_candidate_profile_and_fills_history_reply(tmp_path) -> None:

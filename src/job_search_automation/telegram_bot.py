@@ -31,6 +31,16 @@ from job_search_automation.profile import (
     read_profile_fields,
     save_profile_field,
 )
+from job_search_automation.reply_templates import (
+    DEFAULT_TEMPLATES,
+    ReplyTemplate,
+    TemplateError,
+    load_templates,
+    render_reply,
+    save_template_field,
+    select_template,
+    templates_path,
+)
 from job_search_automation.reporting import _salary
 from job_search_automation.search import ScanResult, scan_vacancies
 from job_search_automation.storage import VacancyStore
@@ -120,7 +130,11 @@ def _shorten(text: str, limit: int) -> str:
 
 
 def vacancy_message(
-    vacancy: Vacancy, profile: CandidateProfile | None, index: int, total: int
+    vacancy: Vacancy,
+    profile: CandidateProfile | None,
+    index: int,
+    total: int,
+    templates: tuple[ReplyTemplate, ...] = DEFAULT_TEMPLATES,
 ) -> str:
     title = html.escape(vacancy.title)
     company = html.escape(vacancy.company)
@@ -137,8 +151,18 @@ def vacancy_message(
         f"{url}"
     )
     if profile is not None:
-        application = html.escape(profile.application_text(vacancy))
-        message += f"\n\n<b>Готовый текст отклика:</b>\n<pre>{application}</pre>"
+        template = select_template(vacancy, templates)
+        try:
+            application = html.escape(render_reply(profile, vacancy, template))
+            appendix = (
+                f"\n\n<b>Шаблон: {html.escape(template.name)}</b>\n"
+                f"<b>Готовый текст отклика:</b>\n<pre>{application}</pre>"
+            )
+            if len(message + appendix) > 4000:
+                raise TemplateError("Готовый отклик слишком длинный для карточки вакансии")
+            message += appendix
+        except TemplateError as exc:
+            message += f"\n\nТекст отклика недоступен: {html.escape(str(exc))}."
     return message
 
 
@@ -173,6 +197,7 @@ class JobTelegramBot:
                 "inline_keyboard": [
                     [{"text": "🔎 Фильтры поиска", "callback_data": "settings:search"}],
                     [{"text": "📝 Данные для отклика", "callback_data": "settings:profile"}],
+                    [{"text": "✉️ Шаблоны отклика", "callback_data": "templates"}],
                     [{"text": "← Назад", "callback_data": "menu:main"}],
                 ]
             },
@@ -261,8 +286,65 @@ class JobTelegramBot:
             reply_markup={"inline_keyboard": buttons},
         )
 
+    def _reply_templates(self) -> tuple[ReplyTemplate, ...]:
+        return load_templates(templates_path(self.config.database_path))
+
+    def show_templates(self, chat_id: int) -> None:
+        try:
+            templates = self._reply_templates()
+        except TemplateError as exc:
+            self.api.send_message(chat_id, f"Не удалось прочитать шаблоны: {exc}")
+            return
+        buttons = [
+            [{"text": template.name, "callback_data": f"templates:{template.key}"}]
+            for template in templates
+        ]
+        buttons.append([{"text": "← Настройки", "callback_data": "settings"}])
+        self.api.send_message(
+            chat_id,
+            "Шаблон выбирается по словам в названии вакансии. Общий используется, "
+            "если совпадений нет. Выберите шаблон, чтобы изменить текст или слова поиска.",
+            reply_markup={"inline_keyboard": buttons},
+        )
+
+    def show_template(self, chat_id: int, key: str) -> None:
+        try:
+            template = next(item for item in self._reply_templates() if item.key == key)
+        except (TemplateError, StopIteration) as exc:
+            self.api.send_message(chat_id, f"Не удалось открыть шаблон: {exc}")
+            return
+        buttons = [[{"text": "Изменить текст", "callback_data": f"edit:template:{key}:body"}]]
+        if key != "general":
+            buttons.append(
+                [{"text": "Слова для выбора", "callback_data": f"edit:template:{key}:keywords"}]
+            )
+        buttons.append([{"text": "← Шаблоны", "callback_data": "templates"}])
+        self.api.send_message(
+            chat_id,
+            f"Шаблон: {template.name}\n"
+            f"Слова: {', '.join(template.keywords) or 'используется по умолчанию'}\n\n"
+            f"{template.body}",
+            reply_markup={"inline_keyboard": buttons},
+        )
+
     def _begin_edit(self, chat_id: int, kind: str, field: str) -> None:
-        if kind == "profile" and field in EDITABLE_FIELDS:
+        if kind == "template":
+            key, _, template_field = field.partition(":")
+            if key not in {item.key for item in DEFAULT_TEMPLATES} or template_field not in {
+                "body",
+                "keywords",
+            }:
+                return
+            if key == "general" and template_field == "keywords":
+                return
+            label = "Текст шаблона" if template_field == "body" else "Слова для выбора"
+            extra = (
+                " Доступные поля: {name}, {title}, {company}, {about}, {skills_line}, "
+                "{resume_line}, {portfolio_line}, {contact_line}."
+                if template_field == "body"
+                else " Перечислите через запятую; '-' очистит список."
+            )
+        elif kind == "profile" and field in EDITABLE_FIELDS:
             label = PROFILE_LABELS[field]
             extra = " Навыки перечислите через запятую." if field == "skills" else ""
             extra += (
@@ -289,7 +371,12 @@ class JobTelegramBot:
     def _apply_edit(self, chat_id: int, text: str) -> None:
         kind, field = self.pending_edits[chat_id]
         try:
-            if kind == "profile":
+            if kind == "template":
+                key, _, template_field = field.partition(":")
+                save_template_field(
+                    templates_path(self.config.database_path), key, template_field, text
+                )
+            elif kind == "profile":
                 save_profile_field(self.config.profile_path, field, text)
             else:
                 items = tuple(item.strip() for item in re.split(r"[,;\n]", text) if item.strip())
@@ -304,12 +391,14 @@ class JobTelegramBot:
                 if field == "area_ids" and any(not item.isdigit() for item in items):
                     raise ConfigError("Для региона нужны числовые ID HeadHunter")
                 self._save_search_settings(**{field: items})
-        except (ConfigError, ProfileError, OSError) as exc:
+        except (ConfigError, ProfileError, TemplateError, OSError) as exc:
             self.api.send_message(chat_id, f"Не сохранил: {exc}. Попробуйте ещё раз или /cancel.")
             return
         del self.pending_edits[chat_id]
         self.api.send_message(chat_id, "Сохранено.")
-        if kind == "profile":
+        if kind == "template":
+            self.show_template(chat_id, field.partition(":")[0])
+        elif kind == "profile":
             self.show_profile_settings(chat_id)
         else:
             self.show_search_settings(chat_id)
@@ -413,6 +502,15 @@ class JobTelegramBot:
             )
             return None
 
+    def _optional_templates(self, chat_id: int) -> tuple[ReplyTemplate, ...]:
+        try:
+            return self._reply_templates()
+        except TemplateError as exc:
+            self.api.send_message(
+                chat_id, f"Не удалось прочитать шаблоны: {exc}. Использую стандартные."
+            )
+            return DEFAULT_TEMPLATES
+
     def handle_update(self, update: dict[str, Any]) -> None:
         message = update.get("message")
         callback = update.get("callback_query")
@@ -500,6 +598,12 @@ class JobTelegramBot:
             elif action == "settings:profile":
                 self.pending_edits.pop(chat_id, None)
                 self.show_profile_settings(chat_id)
+            elif action == "templates":
+                self.pending_edits.pop(chat_id, None)
+                self.show_templates(chat_id)
+            elif action.startswith("templates:"):
+                self.pending_edits.pop(chat_id, None)
+                self.show_template(chat_id, action.removeprefix("templates:"))
             elif action.startswith("edit:"):
                 parts = action.split(":", 2)
                 if len(parts) == 3:
@@ -548,10 +652,11 @@ class JobTelegramBot:
             self.api.send_message(chat_id, "Это последняя страница новых вакансий.")
             return
         profile = self._optional_profile(chat_id)
+        templates = self._optional_templates(chat_id) if profile is not None else DEFAULT_TEMPLATES
         for index, vacancy in enumerate(items[start : start + size], start=start + 1):
             self.api.send_message(
                 chat_id,
-                vacancy_message(vacancy, profile, index, len(items)),
+                vacancy_message(vacancy, profile, index, len(items), templates),
                 html_mode=True,
             )
         buttons: list[dict[str, str]] = []
@@ -574,11 +679,12 @@ class JobTelegramBot:
             )
             return
         profile = self._optional_profile(chat_id)
+        templates = self._optional_templates(chat_id) if profile is not None else DEFAULT_TEMPLATES
         if page == 0:
             self.api.send_message(chat_id, f"Ранее найденные вакансии: {total}.")
         for index, vacancy in enumerate(vacancies, start=page * size + 1):
             self.api.send_message(
-                chat_id, vacancy_message(vacancy, profile, index, total), html_mode=True
+                chat_id, vacancy_message(vacancy, profile, index, total, templates), html_mode=True
             )
         buttons: list[dict[str, str]] = []
         if page > 0:

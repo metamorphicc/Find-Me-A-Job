@@ -115,7 +115,11 @@ def save_template_field(path: Path, key: str, field: str, text: str) -> None:
         validate_body(text)
         templates[index] = replace(templates[index], body=text.strip())
     else:
-        keywords = tuple(word.strip() for word in re.split(r"[,\n]", text) if word.strip())
+        keywords = (
+            ()
+            if text.strip() == "-"
+            else tuple(word.strip() for word in re.split(r"[,\n]", text) if word.strip())
+        )
         if len(keywords) > 20 or any(len(word) > 40 for word in keywords):
             raise TemplateError("Можно указать не больше 20 слов длиной до 40 символов")
         templates[index] = replace(templates[index], keywords=keywords)
