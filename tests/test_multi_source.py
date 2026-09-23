@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from dataclasses import replace
 
 import pytest
@@ -82,3 +84,27 @@ def test_cross_source_duplicate_is_kept_once_in_history(tmp_path):
         assert store.count() == 1
         assert store.get_vacancy("remotive", "1") is not None
         assert [item.source for item in store.recent_vacancies()] == ["hh"]
+
+
+def test_existing_database_adds_cross_source_index_without_losing_rows(tmp_path):
+    path = tmp_path / "jobs.db"
+    item = vacancy("hh")
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """CREATE TABLE vacancies (
+                source TEXT NOT NULL, source_id TEXT NOT NULL, title TEXT NOT NULL,
+                company TEXT NOT NULL, url TEXT NOT NULL, area TEXT NOT NULL,
+                published_at TEXT NOT NULL, payload_json TEXT NOT NULL,
+                status TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                PRIMARY KEY (source, source_id))"""
+        )
+        connection.execute(
+            """INSERT INTO vacancies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                item.source, item.source_id, item.title, item.company, item.url, item.area,
+                item.published_at, json.dumps(item.to_dict()), "discovered", "2026-09-24", "2026-09-24",
+            ),
+        )
+    with VacancyStore(path) as store:
+        assert store.count() == 1
+        assert store.save([vacancy("wwr")]) == []
