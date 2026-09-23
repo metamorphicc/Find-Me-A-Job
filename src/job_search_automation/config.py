@@ -49,6 +49,7 @@ class AppConfig:
     reports_dir: Path
     telegram: TelegramConfig
     profile_path: Path
+    superjob_app_key: str = ""
 
 
 def _strings(value: Any, field: str) -> tuple[str, ...]:
@@ -177,4 +178,5 @@ def load_config(path: str | Path) -> AppConfig:
             page_size=_bounded_int(telegram_raw.get("page_size", 5), "telegram.page_size", 1, 10),
         ),
         profile_path=root / str(telegram_raw.get("profile", "profile.json")),
+        superjob_app_key=os.environ.get("SUPERJOB_APP_KEY", "").strip(),
     )

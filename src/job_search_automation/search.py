@@ -10,7 +10,9 @@ from job_search_automation.config import AppConfig, SearchConfig
 from job_search_automation.filters import rejection_reason
 from job_search_automation.hh import HhClient
 from job_search_automation.models import Vacancy
+from job_search_automation.public_sources import public_providers
 from job_search_automation.storage import VacancyStore
+from job_search_automation.superjob import SuperJobClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +35,11 @@ class SearchError(RuntimeError):
 
 
 def build_providers(config: AppConfig) -> dict[str, SearchProvider]:
-    return {"hh": HhClient(config.hh)}
+    return {
+        "hh": HhClient(config.hh),
+        "superjob": SuperJobClient(config.superjob_app_key),
+        **public_providers(),
+    }
 
 
 def scan_vacancies(config: AppConfig) -> ScanResult:

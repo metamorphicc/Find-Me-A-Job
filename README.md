@@ -2,7 +2,7 @@
 
 Local Python application for finding remote vacancies, filtering them, and keeping a private history so the same vacancy is not shown as new twice.
 
-The first provider uses the public [HeadHunter API](https://api.hh.ru/openapi/redoc). Search requests use the current `work_format=REMOTE` filter. If the API is unreachable, the application falls back to the public HH search page through a local headless Chromium browser. Strict remote mode additionally rejects results that also advertise office, hybrid, or field work.
+The app searches HeadHunter, Remotive and We Work Remotely, with optional SuperJob and FL.ru adapters. Configure sources under `search.sources` in `config.toml`. HeadHunter uses its [public API](https://api.hh.ru/openapi/redoc) and can fall back to a local headless Chromium browser. Remotive uses its [public API](https://github.com/remotive-io/remote-jobs-api); We Work Remotely and FL.ru use their RSS feeds. SuperJob requires an application key in the `SUPERJOB_APP_KEY` environment variable. A failed source is reported while other sources continue. The FL.ru feed currently returns HTTP 403 from some networks, so leave it disabled until it works from yours.
 
 Candidate profiles, resumes, the search database, generated reports, browser sessions, screenshots, and application history are local-only and excluded from Git.
 
@@ -24,7 +24,7 @@ notepad .\config.toml
 
 On Windows, double-click `run-search.cmd` to scan and open the generated HTML report. The script creates a local `config.toml` from the example if it is missing and restores the matching Chromium build when Playwright has been updated.
 
-Edit `search.queries` in `config.toml` for the roles you need. The included starter configuration searches across Russia but accepts only vacancies explicitly marked as fully remote. Employer areas such as Moscow are allowed because no trip to the office is required.
+Edit `search.queries` and `search.sources` in `config.toml` for the roles and feeds you need. The included starter configuration searches HH in Russia plus worldwide remote listings. HH's `area_ids` and `experience_ids` apply only to HH; other sources are matched locally against search phrases. Every international listing shows its stated location scope. Check whether the employer can hire from your country before applying: remote does not mean worldwide.
 
 HeadHunter asks API clients to identify themselves. Set `hh.user_agent` to `JobSearchAutomation/0.1 (YOUR_EMAIL)` in the ignored local `config.toml`. The address is sent only as an HTTP client contact to HeadHunter and is not stored in Git.
 
@@ -71,8 +71,6 @@ Bot edits to search filters are saved in ignored `data/search-settings.json`. Th
 Use **⚙️ Настройки → ✉️ Шаблоны отклика** to edit the general, internship, Python, and analytics replies. Initially they share the same neutral wording. For each template, you can replace its text; for role-specific templates, you can also change the words that select it. The bot compares those words with the vacancy title, checking internship, Python, and analytics in that order, then uses the general template if none match. The edited templates stay in ignored `data/reply-templates.json`. Existing vacancies use the latest template text when you reopen them. Each vacancy card also has **📝 Другой шаблон** to preview a different reply for that vacancy; this does not change the automatic rule.
 
 Template text supports `{name}`, `{title}`, `{company}`, `{about}`, `{skills_line}`, `{resume_line}`, `{portfolio_line}`, and `{contact_line}`. The values come only from your profile and the vacancy. Keep role-specific claims in your own profile or template text factual. Optional skills and links disappear when their profile fields are empty. Invalid placeholders are rejected when saving. Searching and showing reply text never sends an application.
-
-The six local implementation branches form a chain: `codex/application-profile` → `codex/application-tracking` → `codex/application-probe` → `codex/application-fill` → `codex/application-review` → `codex/application-submit`. Push and merge them in this order. Open each pull request against `main` only after the previous one is merged, using GitHub's **Merge pull request** option so later branches retain their parent commits. Do not squash the earlier pull requests unless you rebase the later branches first.
 
 Before publishing, run `.\.venv\Scripts\python.exe scripts/privacy_scan.py .`. It checks tracked files for local candidate data paths and common credentials.
 
