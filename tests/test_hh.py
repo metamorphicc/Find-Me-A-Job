@@ -58,3 +58,20 @@ def test_search_requests_current_remote_work_format(monkeypatch) -> None:
     assert results[0].is_remote()
     assert ("work_format", "REMOTE") in captured["params"]
     assert ("area", "113") in captured["params"]
+
+
+def test_category_search_uses_professional_roles_instead_of_query(monkeypatch) -> None:
+    client = HhClient(HhConfig("https://api.hh.ru", "test", 1))
+    captured = {}
+
+    def fake_get(url, *, params, timeout):
+        captured["params"] = params
+        return FakeResponse()
+
+    monkeypatch.setattr(client.session, "get", fake_get)
+    search = SearchConfig((), (), (), (), True, True, 7, 20, categories=("software",))
+    result = client.search(search)
+
+    assert not any(name == "text" for name, _ in captured["params"])
+    assert ("professional_role", "96") in captured["params"]
+    assert result[0].categories == ("software",)

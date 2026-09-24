@@ -27,6 +27,7 @@ class Vacancy:
     market: str = "ru"
     location_scope: str = ""
     pay_label: str = ""
+    categories: tuple[str, ...] = ()
 
     def is_remote(self) -> bool:
         return "REMOTE" in self.work_formats
@@ -37,6 +38,7 @@ class Vacancy:
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["work_formats"] = list(self.work_formats)
+        value["categories"] = list(self.categories)
         value["is_remote"] = self.is_remote()
         return value
 
@@ -47,7 +49,7 @@ class Vacancy:
             if field.name in value:
                 data[field.name] = (
                     tuple(value[field.name])
-                    if field.name == "work_formats"
+                    if field.name in {"work_formats", "categories"}
                     else value[field.name]
                 )
             elif field.default is not MISSING:

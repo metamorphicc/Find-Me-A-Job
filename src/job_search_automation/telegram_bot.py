@@ -14,6 +14,7 @@ import requests
 from playwright.sync_api import Error as PlaywrightError
 
 from job_search_automation.application_workflow import ApplicationManager, ReviewSummary
+from job_search_automation.categories import CATEGORY_LABELS
 from job_search_automation.config import (
     AppConfig,
     ConfigError,
@@ -27,6 +28,7 @@ from job_search_automation.config import (
     validate_schedule,
 )
 from job_search_automation.discover import discover_application_links
+from job_search_automation.filters import rejection_reason
 from job_search_automation.forms import FormProbeError
 from job_search_automation.hh import HhApiError
 from job_search_automation.models import Vacancy
@@ -150,7 +152,8 @@ class TelegramApi:
             payload["parse_mode"] = "HTML"
             payload["disable_web_page_preview"] = True
         result = self._request("sendMessage", payload)
-        return result.get("message_id") if isinstance(result, dict) else None
+        message_id = result.get("message_id") if isinstance(result, dict) else None
+        return message_id if isinstance(message_id, int) else None
 
     def edit_message(
         self, chat_id: int, message_id: int, text: str, *,
@@ -249,6 +252,7 @@ class JobTelegramBot:
         self.api = api
         self.scanner = scanner
         self.new_items: dict[int, list[Vacancy]] = {}
+        self.history_items: dict[int, list[Vacancy]] = {}
         self.pending_edits: dict[int, tuple[str, str]] = {}
         self.applications = application_manager or ApplicationManager(
             config, headless=os.environ.get("JOB_SEARCH_HEADLESS") == "1"
@@ -261,6 +265,7 @@ class JobTelegramBot:
     def _save_search_settings(self, **changes: Any) -> None:
         updated = replace(self._search_settings(), **changes)
         save_search_settings(updated, search_settings_path(self.config.database_path))
+        self.history_items.clear()
 
     def show_settings(self, chat_id: int) -> None:
         self.api.send_message(
@@ -298,7 +303,10 @@ class JobTelegramBot:
         self.api.send_message(
             chat_id,
             "Фильтры поиска:\n"
-            f"Запросы: {', '.join(settings.queries)}\n"
+            f"Режим: {'категории' if settings.categories else 'текстовые запросы'}\n"
+            f"Профессии: {', '.join(CATEGORY_LABELS[name] for name in settings.categories) or 'любые'}\n"
+            f"Запросы: {', '.join(settings.queries) or 'нет'}"
+            f"{' (сейчас не используются)' if settings.categories else ''}\n"
             f"Источники: {', '.join(settings.sources)}\n"
             f"Типы: {', '.join(settings.kinds)}\n"
             f"Удалённо: {'да' if settings.remote_only else 'нет'}\n"
@@ -310,7 +318,8 @@ class JobTelegramBot:
             f"Исключить слова: {', '.join(settings.excluded_keywords) or 'нет'}",
             reply_markup={
                 "inline_keyboard": [
-                    [{"text": "Запросы", "callback_data": "edit:search:queries"}],
+                    [{"text": "Профессиональные категории", "callback_data": "choose:categories"}],
+                    [{"text": "Запросы (текстовый режим)", "callback_data": "edit:search:queries"}],
                     [
                         {"text": "Источники", "callback_data": "choose:sources"},
                         {"text": "Работа / заказы", "callback_data": "choose:kinds"},
@@ -582,6 +591,20 @@ class JobTelegramBot:
                 ]
                 for kind, label in (("job", "Вакансии"), ("freelance", "Заказы"))
             ]
+        elif choice == "categories":
+            settings = self._search_settings()
+            buttons = [
+                [
+                    {
+                        "text": f"{'✓' if name in settings.categories else '○'} {label}",
+                        "callback_data": f"toggle:category:{name}",
+                    }
+                ]
+                for name, label in CATEGORY_LABELS.items()
+            ]
+            buttons.append(
+                [{"text": "Поиск по запросам вместо категорий", "callback_data": "set:categories:any"}]
+            )
         elif choice == "experience":
             buttons = [
                 [{"text": "Любой опыт", "callback_data": "set:experience:any"}],
@@ -660,6 +683,24 @@ class JobTelegramBot:
                     kinds=tuple(name for name in ("job", "freelance") if name in selected)
                 )
                 self._show_choices(chat_id, "kinds")
+                return
+            elif action.startswith("toggle:category:"):
+                category = action.removeprefix("toggle:category:")
+                if category not in CATEGORY_LABELS:
+                    return
+                selected = set(settings.categories)
+                if category in selected:
+                    selected.remove(category)
+                else:
+                    selected.add(category)
+                self._save_search_settings(
+                    categories=tuple(name for name in CATEGORY_LABELS if name in selected)
+                )
+                self._show_choices(chat_id, "categories")
+                return
+            elif action == "set:categories:any":
+                self._save_search_settings(categories=())
+                self._show_choices(chat_id, "categories")
                 return
             elif action.startswith("set:experience:"):
                 values = {
@@ -899,6 +940,7 @@ class JobTelegramBot:
                 )
                 return None
         self.new_items[chat_id] = result.new_items
+        self.history_items.pop(chat_id, None)
         if result.errors:
             self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
         if not result.new_items:
@@ -1210,19 +1252,30 @@ class JobTelegramBot:
         )
 
     def show_history(self, chat_id: int, page: int, *, message_id: int | None = None) -> None:
-        with VacancyStore(self.config.database_path) as store:
-            total = store.count()
-            vacancies = store.recent_vacancies(1, page)
-        if not vacancies:
+        if page == 0 or chat_id not in self.history_items:
+            try:
+                settings = self._search_settings()
+            except ConfigError as exc:
+                self._show_card(chat_id, f"Не удалось прочитать фильтры: {exc}", message_id=message_id)
+                return
+            with VacancyStore(self.config.database_path) as store:
+                all_items = store.recent_vacancies(store.count())
+            self.history_items[chat_id] = [
+                item for item in all_items if rejection_reason(item, settings) is None
+            ]
+        matches = self.history_items[chat_id]
+        total = len(matches)
+        if page >= total:
             self._show_card(
                 chat_id,
-                "История пока пуста." if total == 0 else "Это последняя карточка истории.",
+                "Под текущие фильтры история пока пуста." if total == 0
+                else "Это последняя карточка истории.",
                 message_id=message_id,
             )
             return
         profile = self._optional_profile(chat_id)
         templates = self._optional_templates(chat_id) if profile is not None else DEFAULT_TEMPLATES
-        vacancy = vacancies[0]
+        vacancy = matches[page]
         markup = self._reply_button(vacancy, profile) or {"inline_keyboard": []}
         arrows = []
         if page > 0:

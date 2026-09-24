@@ -2,6 +2,7 @@
 queries = ["Python", "backend", "frontend"]
 sources = ["hh", "remotive", "wwr", "freelancer"]
 kinds = ["job", "freelance"]
+categories = ["software", "it_ops"] # Empty list uses the text queries below instead.
 excluded_keywords = []
 area_ids = ["113"]
 experience_ids = ["noExperience", "between1And3"]

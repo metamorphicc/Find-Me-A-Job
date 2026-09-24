@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from job_search_automation.categories import CATEGORY_LABELS
+
 
 class ConfigError(ValueError):
     """Raised when the local search configuration is invalid."""
@@ -29,6 +31,7 @@ class SearchConfig:
     per_query: int
     sources: tuple[str, ...] = ("hh",)
     kinds: tuple[str, ...] = ("job", "freelance")
+    categories: tuple[str, ...] = ()
 
 
 @dc(frozen=True, slots=True)
@@ -130,10 +133,14 @@ def save_schedule_settings(schedule: ScheduleConfig, path: Path) -> None:
 
 
 def _validate_search(search: SearchConfig) -> SearchConfig:
+    if not search.categories and not search.queries:
+        raise ConfigError("search needs categories or text queries")
     if not search.sources or set(search.sources) - SOURCE_IDS:
         raise ConfigError("search.sources contains no source or an unknown source")
     if not search.kinds or set(search.kinds) - {"job", "freelance"}:
         raise ConfigError("search.kinds must include job or freelance")
+    if set(search.categories) - CATEGORY_LABELS.keys():
+        raise ConfigError("search.categories contains an unknown category")
     return search
 
 
@@ -146,9 +153,7 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         raise ConfigError(f"Cannot read saved search settings: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError("Saved search settings must be a JSON object")
-    queries = _strings(raw.get("queries"), "saved search.queries")
-    if not queries:
-        raise ConfigError("Saved search queries must not be empty")
+    queries = _strings(raw.get("queries", list(base.queries)), "saved search.queries")
     remote_only = raw.get("remote_only")
     strict_remote = raw.get("strict_remote")
     if not isinstance(remote_only, bool) or not isinstance(strict_remote, bool):
@@ -164,6 +169,7 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         per_query=_bounded_int(raw.get("per_query"), "saved per_query", 1, 500),
         sources=_strings(raw.get("sources", list(base.sources)), "saved sources"),
         kinds=_strings(raw.get("kinds", list(base.kinds)), "saved kinds"),
+        categories=_strings(raw.get("categories", list(base.categories)), "saved categories"),
     ))
 
 
@@ -200,9 +206,7 @@ def load_config(path: str | Path) -> AppConfig:
     ):
         raise ConfigError("search, hh, storage, telegram, and schedule must be TOML tables")
 
-    queries = _strings(search_raw.get("queries"), "search.queries")
-    if not queries:
-        raise ConfigError("search.queries must contain at least one query")
+    queries = _strings(search_raw.get("queries", []), "search.queries")
 
     root = config_path.resolve().parent
     database_path = root / str(storage_raw.get("database", "data/jobs.db"))
@@ -227,6 +231,9 @@ def load_config(path: str | Path) -> AppConfig:
         per_query=_bounded_int(search_raw.get("per_query", 50), "search.per_query", 1, 500),
         sources=_strings(search_raw.get("sources", ["hh"]), "search.sources"),
         kinds=_strings(search_raw.get("kinds", ["job", "freelance"]), "search.kinds"),
+        categories=_strings(
+            search_raw.get("categories", ["software", "it_ops"]), "search.categories"
+        ),
     )
     _validate_search(search)
     schedule = validate_schedule(

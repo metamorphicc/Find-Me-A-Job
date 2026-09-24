@@ -48,7 +48,9 @@ def test_scan_keeps_successful_sources_when_one_fails(tmp_path):
     config_path = tmp_path / "config.toml"
     config_path.write_text('[search]\nqueries = ["Python"]\n', encoding="utf-8")
     config = load_config(config_path)
-    config = replace(config, search=replace(config.search, sources=("hh", "remote")))
+    config = replace(
+        config, search=replace(config.search, sources=("hh", "remote"), categories=())
+    )
     providers = {"hh": Provider(error="offline"), "remote": Provider([vacancy("remote")])}
 
     first = scan_with_providers(config, providers)

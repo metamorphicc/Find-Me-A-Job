@@ -6,6 +6,7 @@ from typing import Any
 
 import requests
 
+from job_search_automation.categories import freelancer_categories, freelancer_job_ids
 from job_search_automation.config import SearchConfig
 from job_search_automation.models import Vacancy
 from job_search_automation.public_sources import SourceError, _plain
@@ -23,16 +24,21 @@ class FreelancerClient:
     def search(self, settings: SearchConfig) -> list[Vacancy]:
         found: dict[str, Vacancy] = {}
         cutoff = datetime.now(UTC) - timedelta(days=settings.days)
-        for query in settings.queries:
+        for query in ("",) if settings.categories else settings.queries:
+            params: dict[str, object] = {
+                "limit": min(settings.per_query, 100),
+                "sort_field": "time_updated",
+                "sort_order": "desc",
+            }
+            if settings.categories:
+                params["jobs[]"] = freelancer_job_ids(settings.categories)
+                params["job_details"] = "true"
+            else:
+                params["query"] = query
             try:
                 response = self.session.get(
                     self.endpoint,
-                    params={
-                        "query": query,
-                        "limit": min(settings.per_query, 100),
-                        "sort_field": "time_updated",
-                        "sort_order": "desc",
-                    },
+                    params=params,
                     timeout=25,
                 )
                 response.raise_for_status()
@@ -47,7 +53,10 @@ class FreelancerClient:
                 raise SourceError("Freelancer.com вернул неожиданный формат")
             for project in projects:
                 vacancy = vacancy_from_project(project, query, cutoff)
-                if vacancy is not None:
+                if vacancy is not None and (
+                    not settings.categories
+                    or set(vacancy.categories).intersection(settings.categories)
+                ):
                     found[vacancy.source_id] = vacancy
         return list(found.values())
 
@@ -84,6 +93,7 @@ def vacancy_from_project(item: Any, query: str, cutoff: datetime) -> Vacancy | N
     country = location.get("country") if isinstance(location, dict) else None
     country_name = country.get("name") if isinstance(country, dict) else None
     area = str(country_name or "География не указана")
+    categories = freelancer_categories(item.get("jobs"))
     return Vacancy(
         source="freelancer",
         source_id=str(project_id),
@@ -105,4 +115,5 @@ def vacancy_from_project(item: Any, query: str, cutoff: datetime) -> Vacancy | N
         market="global",
         location_scope=area,
         pay_label=amount,
+        categories=categories,
     )

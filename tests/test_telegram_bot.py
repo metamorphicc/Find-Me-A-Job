@@ -268,6 +268,23 @@ def test_history_arrows_edit_same_card(tmp_path) -> None:
     assert "Junior Python" in api.messages[0][1]
 
 
+def test_history_respects_current_professional_categories(tmp_path) -> None:
+    settings = config(tmp_path)
+    with VacancyStore(settings.database_path) as store:
+        store.save([
+            replace(vacancy("1"), title="Бармен", categories=()),
+            replace(vacancy("2"), title="Backend developer", categories=("software",)),
+        ])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+    bot._save_search_settings(categories=("software",))
+    bot.show_history(42, 0)
+
+    assert "Backend developer" in api.messages[-1][1]
+    assert "Бармен" not in api.messages[-1][1]
+    assert "1/1" in api.messages[-1][1]
+
+
 def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:
     settings = config(tmp_path)
     api = FakeApi()
@@ -460,6 +477,21 @@ def test_bot_can_enable_sources_and_choose_only_freelance(tmp_path) -> None:
     saved = bot._search_settings()
     assert saved.sources == ("hh", "remotive")
     assert saved.kinds == ("freelance",)
+
+
+def test_bot_switches_professional_categories(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(callback("choose:categories"))
+    assert "Разработка и тестирование" in str(api.messages[-1][2])
+    bot.handle_update(callback("toggle:category:software"))
+    assert bot._search_settings().categories == ("software",)
+    bot.handle_update(callback("toggle:category:it_ops"))
+    assert bot._search_settings().categories == ("software", "it_ops")
+    bot.handle_update(callback("set:categories:any"))
+    assert bot._search_settings().categories == ()
 
 
 def test_non_hh_opportunity_has_reply_button(tmp_path) -> None:

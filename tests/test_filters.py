@@ -56,3 +56,13 @@ def test_can_search_only_jobs_or_only_freelance():
 
     job_only = replace(settings(), kinds=("job",))
     assert rejection_reason(replace(vacancy("REMOTE"), kind="freelance"), job_only)
+
+
+def test_professional_category_excludes_unrelated_remote_jobs():
+    from dataclasses import replace
+
+    focused = replace(settings(), categories=("software", "it_ops"))
+    bartender = replace(vacancy("REMOTE"), title="Бармен", categories=())
+    developer = replace(vacancy("REMOTE"), categories=("software",))
+    assert rejection_reason(bartender, focused) == "outside selected professional categories"
+    assert rejection_reason(developer, focused) is None

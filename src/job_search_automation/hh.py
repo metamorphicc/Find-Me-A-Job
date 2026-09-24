@@ -12,6 +12,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from job_search_automation.categories import HH_ROLES, hh_role_ids
 from job_search_automation.config import HhConfig, SearchConfig
 from job_search_automation.models import Vacancy
 
@@ -32,7 +33,9 @@ def _salary(item: dict[str, Any]) -> tuple[int | None, int | None, str | None, b
     return value.get("from"), value.get("to"), value.get("currency"), value.get("gross")
 
 
-def vacancy_from_hh(item: dict[str, Any], query: str) -> Vacancy:
+def vacancy_from_hh(
+    item: dict[str, Any], query: str, selected_categories: tuple[str, ...] = ()
+) -> Vacancy:
     work_formats = tuple(
         str(value.get("id"))
         for value in (item.get("work_format") or [])
@@ -48,6 +51,11 @@ def vacancy_from_hh(item: dict[str, Any], query: str) -> Vacancy:
         " ".join((str(snippet.get("requirement") or ""), str(snippet.get("responsibility") or "")))
     )
     employment = item.get("employment_form") or item.get("employment") or {}
+    roles = item.get("professional_roles") or []
+    role_ids = {str(role.get("id")) for role in roles if isinstance(role, dict)}
+    categories = tuple(
+        category for category, ids in HH_ROLES.items() if role_ids.intersection(ids)
+    ) or selected_categories
 
     return Vacancy(
         source="hh",
@@ -66,6 +74,7 @@ def vacancy_from_hh(item: dict[str, Any], query: str) -> Vacancy:
         salary_gross=salary_gross,
         summary=summary,
         query=query,
+        categories=categories,
     )
 
 
@@ -112,7 +121,7 @@ class HhClient:
 
     def _search_api(self, search: SearchConfig) -> list[Vacancy]:
         unique: dict[str, Vacancy] = {}
-        for query in search.queries:
+        for query in ("",) if search.categories else search.queries:
             for vacancy in self._search_query(query, search):
                 unique.setdefault(vacancy.source_id, vacancy)
         return list(unique.values())
@@ -124,16 +133,20 @@ class HhClient:
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(locale="ru-RU")
                 try:
-                    for query in search.queries:
+                    for query in ("",) if search.categories else search.queries:
                         page_number = 0
                         query_count = 0
                         while query_count < search.per_query:
                             params: list[tuple[str, str | int]] = [
-                                ("text", query),
                                 ("page", page_number),
                                 ("period", search.days),
                                 ("order_by", "publication_time"),
                             ]
+                            if query:
+                                params.append(("text", query))
+                            params.extend(
+                                ("professional_role", role) for role in hh_role_ids(search.categories)
+                            )
                             params.extend(("area", value) for value in search.area_ids)
                             params.extend(("experience", value) for value in search.experience_ids)
                             if search.remote_only:
@@ -156,7 +169,9 @@ class HhClient:
                                 break
 
                             for index in range(card_count):
-                                vacancy = self._vacancy_from_card(titles.nth(index), query)
+                                vacancy = self._vacancy_from_card(
+                                    titles.nth(index), query, search.categories
+                                )
                                 unique.setdefault(vacancy.source_id, vacancy)
                                 query_count += 1
                                 if query_count >= search.per_query:
@@ -170,7 +185,9 @@ class HhClient:
             raise HhApiError(f"browser search failed: {exc}") from exc
         return list(unique.values())
 
-    def _vacancy_from_card(self, title: Locator, query: str) -> Vacancy:
+    def _vacancy_from_card(
+        self, title: Locator, query: str, categories: tuple[str, ...] = ()
+    ) -> Vacancy:
         card = title.locator("xpath=ancestor::div[@id][1]")
         url = str(title.get_attribute("href") or "")
         source_id = str(card.get_attribute("id") or "")
@@ -210,6 +227,7 @@ class HhClient:
             salary_gross=None,
             summary=card_text,
             query=query,
+            categories=categories,
         )
 
     def _search_query(self, query: str, search: SearchConfig) -> Iterable[Vacancy]:
@@ -218,7 +236,6 @@ class HhClient:
         yielded = 0
         while yielded < search.per_query:
             params: list[tuple[str, str | int | bool]] = [
-                ("text", query),
                 ("page", page),
                 ("per_page", min(per_page, search.per_query - yielded)),
                 ("period", search.days),
@@ -227,6 +244,11 @@ class HhClient:
                 ("locale", "RU"),
                 ("host", "hh.ru"),
             ]
+            if query:
+                params.append(("text", query))
+            params.extend(
+                ("professional_role", role) for role in hh_role_ids(search.categories)
+            )
             params.extend(("area", area_id) for area_id in search.area_ids)
             params.extend(("experience", value) for value in search.experience_ids)
             if search.remote_only:
@@ -253,7 +275,7 @@ class HhClient:
 
             items = payload.get("items", [])
             for item in items:
-                yield vacancy_from_hh(item, query)
+                yield vacancy_from_hh(item, query, search.categories)
                 yielded += 1
                 if yielded >= search.per_query:
                     return

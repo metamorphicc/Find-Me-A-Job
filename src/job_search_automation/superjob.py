@@ -20,6 +20,8 @@ class SuperJobClient:
         self.session = session or requests.Session()
 
     def search(self, settings: SearchConfig) -> list[Vacancy]:
+        if settings.categories:
+            raise SourceError("SuperJob пока не поддерживает фильтр профессиональных категорий")
         if not self.app_key:
             raise SourceError("Для SuperJob укажите SUPERJOB_APP_KEY")
         found: dict[str, Vacancy] = {}
