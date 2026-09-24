@@ -64,9 +64,17 @@ class FakeApi:
         self.messages = []
         self.callbacks = []
         self.photos = []
+        self.edits = []
 
-    def send_message(self, chat_id, text, *, reply_markup=None, html_mode=False) -> None:
+    def send_message(self, chat_id, text, *, reply_markup=None, html_mode=False) -> int:
         self.messages.append((chat_id, text, reply_markup, html_mode))
+        return len(self.messages)
+
+    def edit_message(
+        self, chat_id, message_id, text, *, reply_markup=None, html_mode=False
+    ) -> None:
+        self.edits.append((chat_id, message_id, text))
+        self.messages[message_id - 1] = (chat_id, text, reply_markup, html_mode)
 
     def answer_callback(self, callback_id, text="") -> None:
         self.callbacks.append((callback_id, text))
@@ -132,7 +140,10 @@ def test_bot_searches_without_profile_and_sends_vacancy_link(tmp_path) -> None:
     card = next(text for _, text, _, mode in api.messages if mode)
     assert "https://hh.ru/vacancy/123" in card
     assert "Готовый текст отклика" not in card
-    assert next(markup for _, _, markup, mode in api.messages if mode) is None
+    assert len(api.messages) == 1
+    assert next(markup for _, _, markup, mode in api.messages if mode)["inline_keyboard"][0][0][
+        "callback_data"
+    ] == "history:0"
 
     bot.handle_update(message("/history"))
     historical_card = [text for _, text, _, mode in api.messages if mode][-1]
@@ -209,12 +220,52 @@ def test_old_vacancies_are_paginated_from_local_database(tmp_path) -> None:
     bot = JobTelegramBot(settings, api)
 
     bot.handle_update(message("/history"))
-    assert api.messages[-1][2]["inline_keyboard"][0][0]["callback_data"] == "history:1"
+    assert any(
+        button["callback_data"] == "history:1"
+        for row in api.messages[-1][2]["inline_keyboard"] for button in row
+    )
 
     bot.handle_update(callback("history:1"))
     cards = [text for _, text, _, mode in api.messages if mode]
     assert len(cards) == 2
     assert "https://hh.ru/vacancy/" in cards[1]
+
+
+def test_new_cards_use_one_message_and_arrows_edit_it(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    first = vacancy("1")
+    second = replace(vacancy("2"), title="Backend developer")
+    bot = JobTelegramBot(settings, api)
+    bot.scan(42, result=ScanResult([first, second], 2, 2, "test"))
+
+    assert len(api.messages) == 1
+    assert "Junior Python" in api.messages[0][1]
+    update = callback("new:1")
+    update["callback_query"]["message"]["message_id"] = 1
+    bot.handle_update(update)
+
+    assert len(api.messages) == 1
+    assert api.edits[0][1] == 1
+    assert "Backend developer" in api.messages[0][1]
+    buttons = api.messages[0][2]["inline_keyboard"]
+    assert any(button["callback_data"] == "new:0" for row in buttons for button in row)
+
+
+def test_history_arrows_edit_same_card(tmp_path) -> None:
+    settings = config(tmp_path)
+    with VacancyStore(settings.database_path) as store:
+        store.save([vacancy("1"), replace(vacancy("2"), title="Backend developer")])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+    bot.show_history(42, 0)
+    update = callback("history:1")
+    update["callback_query"]["message"]["message_id"] = 1
+    bot.handle_update(update)
+
+    assert len(api.messages) == 1
+    assert len(api.edits) == 1
+    assert "Junior Python" in api.messages[0][1]
 
 
 def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:

@@ -142,14 +142,29 @@ class TelegramApi:
         *,
         reply_markup: dict[str, Any] | None = None,
         html_mode: bool = False,
-    ) -> None:
+    ) -> int | None:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         if html_mode:
             payload["parse_mode"] = "HTML"
             payload["disable_web_page_preview"] = True
-        self._request("sendMessage", payload)
+        result = self._request("sendMessage", payload)
+        return result.get("message_id") if isinstance(result, dict) else None
+
+    def edit_message(
+        self, chat_id: int, message_id: int, text: str, *,
+        reply_markup: dict[str, Any] | None = None, html_mode: bool = False,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id, "message_id": message_id, "text": text,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        if html_mode:
+            payload["parse_mode"] = "HTML"
+            payload["disable_web_page_preview"] = True
+        self._request("editMessageText", payload)
 
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         self._request("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
@@ -786,13 +801,16 @@ class JobTelegramBot:
                 return
             self.api.answer_callback(callback_id)
             action = str(callback.get("data") or "")
+            message_id = (callback.get("message") or {}).get("message_id")
+            if not isinstance(message_id, int):
+                message_id = None
             if action == "scan":
                 self.pending_edits.pop(chat_id, None)
                 self.scan(chat_id)
-            elif action.startswith("new:") and action[4:].isdigit():
-                self.show_new(chat_id, int(action[4:]))
-            elif action.startswith("history:") and action[8:].isdigit():
-                self.show_history(chat_id, int(action[8:]))
+            elif action.startswith("new:") and action[4:].isdigit() and len(action) <= 10:
+                self.show_new(chat_id, int(action[4:]), message_id=message_id)
+            elif action.startswith("history:") and action[8:].isdigit() and len(action) <= 14:
+                self.show_history(chat_id, int(action[8:]), message_id=message_id)
             elif action == "menu:main":
                 self.pending_edits.pop(chat_id, None)
                 self.api.send_message(
@@ -868,19 +886,23 @@ class JobTelegramBot:
                 self._apply_choice(chat_id, action)
 
     def scan(self, chat_id: int, result: ScanResult | None = None) -> ScanResult | None:
+        progress_id = None
         if result is None:
-            self.api.send_message(chat_id, "Ищу вакансии по сохранённым фильтрам…")
+            progress_id = self.api.send_message(chat_id, "Ищу вакансии по сохранённым фильтрам…")
             try:
                 current_config = replace(self.config, search=self._search_settings())
                 result = self.scanner(current_config)
             except (ConfigError, HhApiError, SearchError, PlaywrightError, OSError) as exc:
-                self.api.send_message(chat_id, f"Поиск не удался: {_shorten(str(exc), 300)}")
+                self._show_card(
+                    chat_id, f"Поиск не удался: {_shorten(str(exc), 300)}",
+                    message_id=progress_id,
+                )
                 return None
         self.new_items[chat_id] = result.new_items
         if result.errors:
             self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
         if not result.new_items:
-            self.api.send_message(
+            self._show_card(
                 chat_id,
                 f"Новых подходящих вакансий нет. Проверено: {result.fetched_count}, "
                 f"подошло: {result.accepted_count}. Можно посмотреть уже найденные.",
@@ -889,14 +911,10 @@ class JobTelegramBot:
                         [{"text": "📚 Посмотреть найденные", "callback_data": "history:0"}]
                     ]
                 },
+                message_id=progress_id,
             )
             return result
-        self.api.send_message(
-            chat_id,
-            f"Нашёл {len(result.new_items)} новых вакансий. Проверено: {result.fetched_count}, "
-            f"подошло: {result.accepted_count}.",
-        )
-        self.show_new(chat_id, 0)
+        self.show_new(chat_id, 0, message_id=progress_id)
         return result
 
     def _begin_application(self, chat_id: int, source: str, source_id: str) -> None:
@@ -1150,63 +1168,79 @@ class JobTelegramBot:
             )
         return {"inline_keyboard": buttons}
 
-    def show_new(self, chat_id: int, page: int) -> None:
+    def _show_card(
+        self, chat_id: int, text: str, *, reply_markup: dict[str, Any] | None = None,
+        html_mode: bool = False, message_id: int | None = None,
+    ) -> None:
+        if message_id is None:
+            self.api.send_message(chat_id, text, reply_markup=reply_markup, html_mode=html_mode)
+        else:
+            self.api.edit_message(
+                chat_id, message_id, text, reply_markup=reply_markup, html_mode=html_mode
+            )
+
+    def show_new(self, chat_id: int, page: int, *, message_id: int | None = None) -> None:
         items = self.new_items.get(chat_id, [])
         if not items:
-            self.api.send_message(chat_id, "Список новых вакансий пуст. Запустите поиск ещё раз.")
+            self._show_card(
+                chat_id, "Список новых вакансий пуст. Запустите поиск ещё раз.",
+                message_id=message_id,
+            )
             return
-        size = self.config.telegram.page_size
-        start = page * size
-        if start >= len(items):
-            self.api.send_message(chat_id, "Это последняя страница новых вакансий.")
+        if page >= len(items):
+            self._show_card(chat_id, "Это последняя карточка новых вакансий.", message_id=message_id)
             return
         profile = self._optional_profile(chat_id)
         templates = self._optional_templates(chat_id) if profile is not None else DEFAULT_TEMPLATES
-        for index, vacancy in enumerate(items[start : start + size], start=start + 1):
-            self.api.send_message(
-                chat_id,
-                vacancy_message(vacancy, profile, index, len(items), templates),
-                reply_markup=self._reply_button(vacancy, profile),
-                html_mode=True,
-            )
-        buttons: list[dict[str, str]] = []
-        if start + size < len(items):
-            buttons.append({"text": "Ещё новые →", "callback_data": f"new:{page + 1}"})
-        buttons.append({"text": "📚 Ранее найденные", "callback_data": "history:0"})
-        self.api.send_message(
-            chat_id, "Продолжить просмотр:", reply_markup={"inline_keyboard": [buttons]}
+        vacancy = items[page]
+        markup = self._reply_button(vacancy, profile) or {"inline_keyboard": []}
+        arrows = []
+        if page > 0:
+            arrows.append({"text": "←", "callback_data": f"new:{page - 1}"})
+        if page + 1 < len(items):
+            arrows.append({"text": "→", "callback_data": f"new:{page + 1}"})
+        if arrows:
+            markup["inline_keyboard"].append(arrows)
+        markup["inline_keyboard"].append(
+            [{"text": "📚 Ранее найденные", "callback_data": "history:0"}]
+        )
+        self._show_card(
+            chat_id, vacancy_message(vacancy, profile, page + 1, len(items), templates),
+            reply_markup=markup, html_mode=True, message_id=message_id,
         )
 
-    def show_history(self, chat_id: int, page: int) -> None:
-        size = self.config.telegram.page_size
+    def show_history(self, chat_id: int, page: int, *, message_id: int | None = None) -> None:
         with VacancyStore(self.config.database_path) as store:
             total = store.count()
-            vacancies = store.recent_vacancies(size, page * size)
+            vacancies = store.recent_vacancies(1, page)
         if not vacancies:
-            self.api.send_message(
+            self._show_card(
                 chat_id,
-                "История пока пуста." if total == 0 else "Это последняя страница истории.",
+                "История пока пуста." if total == 0 else "Это последняя карточка истории.",
+                message_id=message_id,
             )
             return
         profile = self._optional_profile(chat_id)
         templates = self._optional_templates(chat_id) if profile is not None else DEFAULT_TEMPLATES
-        if page == 0:
-            self.api.send_message(chat_id, f"Ранее найденные вакансии: {total}.")
-        for index, vacancy in enumerate(vacancies, start=page * size + 1):
-            self.api.send_message(
-                chat_id,
-                vacancy_message(vacancy, profile, index, total, templates),
-                reply_markup=self._reply_button(vacancy, profile),
-                html_mode=True,
-            )
-        buttons: list[dict[str, str]] = []
+        vacancy = vacancies[0]
+        markup = self._reply_button(vacancy, profile) or {"inline_keyboard": []}
+        arrows = []
         if page > 0:
-            buttons.append({"text": "← Назад", "callback_data": f"history:{page - 1}"})
-        if (page + 1) * size < total:
-            buttons.append({"text": "Ещё →", "callback_data": f"history:{page + 1}"})
-        buttons.append({"text": "🔎 Искать новые", "callback_data": "scan"})
-        self.api.send_message(
-            chat_id, "Продолжить просмотр:", reply_markup={"inline_keyboard": [buttons]}
+            arrows.append({"text": "←", "callback_data": f"history:{page - 1}"})
+        if page + 1 < total:
+            arrows.append({"text": "→", "callback_data": f"history:{page + 1}"})
+        if arrows:
+            markup["inline_keyboard"].append(arrows)
+        if self.new_items.get(chat_id):
+            markup["inline_keyboard"].append(
+                [{"text": "✨ Новые", "callback_data": "new:0"}]
+            )
+        markup["inline_keyboard"].append(
+            [{"text": "🔎 Искать новые", "callback_data": "scan"}]
+        )
+        self._show_card(
+            chat_id, vacancy_message(vacancy, profile, page + 1, total, templates),
+            reply_markup=markup, html_mode=True, message_id=message_id,
         )
 
 

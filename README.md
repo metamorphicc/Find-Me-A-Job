@@ -64,7 +64,7 @@ In the bot, open an opportunity card and press **📄 Подготовить з�
 
 ## Telegram bot
 
-The bot runs on your computer and searches when you press **🔎 Искать вакансии**. It sends new vacancies in batches, each with the original link. If nothing new appears, it offers **📚 Ранее найденные**. Search and history work without a candidate profile. If you add one, both new and historical vacancies also include a filled reply text. Sending a supported Tilda application requires a separate explicit confirmation after reviewing its filled form.
+The bot runs on your computer and searches when you press **🔎 Искать вакансии**. It shows one vacancy card at a time; the arrow buttons replace that card in the same Telegram message. Each card keeps the original link. If nothing new appears, it offers **📚 Ранее найденные**, which uses the same navigation. Search and history work without a candidate profile. If you add one, both new and historical vacancies also include a filled reply text. Sending a supported Tilda application requires a separate explicit confirmation after reviewing its filled form.
 
 Use **⚙️ Настройки** (or `/settings`) in the private bot chat to change search phrases, remote-only rules, experience, region, vacancy age, result limit, and excluded words. The same menu lets you edit the name, introduction, contact, skills, résumé link, and portfolio link used in reply text. After choosing a field, send its new value as a message; `/cancel` leaves it unchanged. A dash (`-`) clears optional fields or excluded words. Profile details are optional for searching.
 
