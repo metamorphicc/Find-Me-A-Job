@@ -6,6 +6,7 @@ from job_search_automation.profile import (
     ProfileError,
     load_profile,
     resume_file,
+    save_custom_fact,
     save_profile_field,
 )
 
@@ -43,3 +44,14 @@ def test_missing_resume_does_not_block_profile_or_search(tmp_path) -> None:
     assert profile.resume_path == ""
     with pytest.raises(ProfileError, match="resume_path"):
         resume_file(profile, path)
+
+
+def test_custom_profile_facts_can_be_saved_and_removed(tmp_path) -> None:
+    path = tmp_path / "profile.json"
+    path.write_text(
+        json.dumps({"name": "Тест", "about": "Учусь", "contact": "связь"}), encoding="utf-8"
+    )
+    save_custom_fact(path, "GitHub", "https://github.com/example")
+    assert ("GitHub", "https://github.com/example") in load_profile(path).facts
+    save_custom_fact(path, "GitHub", "-")
+    assert load_profile(path).facts == ()

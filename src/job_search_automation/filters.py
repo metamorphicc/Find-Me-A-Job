@@ -5,6 +5,8 @@ from job_search_automation.models import Vacancy
 
 
 def rejection_reason(vacancy: Vacancy, config: SearchConfig) -> str | None:
+    if vacancy.kind not in config.kinds:
+        return "opportunity kind disabled"
     if config.remote_only and not vacancy.is_remote():
         return "not remote"
     if config.strict_remote and vacancy.has_non_remote_format():

@@ -15,7 +15,7 @@ from job_search_automation.config import AppConfig
 from job_search_automation.forms import (
     FormProbe,
     FormProbeError,
-    inspect_tilda,
+    inspect_forms,
     select_form,
     validate_form_url,
 )
@@ -38,6 +38,7 @@ class ReviewSummary:
     uploaded_filename: str | None
     review_path: Path
     screenshot_path: Path
+    field_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,10 +100,11 @@ class ApplicationManager:
             if self.configure_page:
                 self.configure_page(page)
             page.goto(target, wait_until="domcontentloaded", timeout=30_000)
-            probe = select_form(inspect_tilda(page), form_index)
+            probe = select_form(inspect_forms(page), form_index)
+            selector = "form.t-form" if probe.family == "tilda" else "form"
             page.evaluate(
-                """index => {
-                  const form = document.querySelectorAll('form.t-form')[index];
+                """({index, selector}) => {
+                  const form = document.querySelectorAll(selector)[index];
                   window.__jobApplicationApproved = false;
                   const block = event => {
                     if (!window.__jobApplicationApproved) {
@@ -111,10 +113,10 @@ class ApplicationManager:
                     }
                   };
                   form.addEventListener('submit', block, true);
-                  form.querySelectorAll('button[type=submit], input[type=submit], .t-submit')
+                  form.querySelectorAll('button[type=submit], input[type=submit], button:not([type]), .t-submit')
                     .forEach(button => button.addEventListener('click', block, true));
                 }""",
-                probe.form_index,
+                {"index": probe.form_index, "selector": selector},
             )
             with VacancyStore(self.config.database_path) as store:
                 store.record_inspection(source, source_id, probe.url)
@@ -135,14 +137,15 @@ class ApplicationManager:
         session = self.sessions.get((source, source_id))
         if session is None:
             raise ApplicationStateError("Браузерная сессия закрыта; подготовьте заявку заново")
-        probes = inspect_tilda(session.page)
+        probes = inspect_forms(session.page)
         current = select_form(probes, session.probe.form_index)
         if current.url != session.probe.url or current.fields != session.probe.fields:
             raise FormProbeError("Форма изменилась; подготовьте заявку заново")
         return self._save_review(session)
 
     def _form_state(self, session: _Session) -> tuple[str, tuple[str, ...]]:
-        form = session.page.locator("form.t-form").nth(session.probe.form_index)
+        selector = "form.t-form" if session.probe.family == "tilda" else "form"
+        form = session.page.locator(selector).nth(session.probe.form_index)
         values = form.evaluate(
             """form => Array.from(form.elements).map(el => {
               if (el.type === 'file') return Array.from(el.files || []).map(file => file.name);
@@ -186,8 +189,8 @@ class ApplicationManager:
         review_id = secrets.token_hex(8)
         root = self.config.profile_path.resolve().parent
         slug = f"{session.vacancy.source}_{session.vacancy.source_id}_{review_id}"
-        review_path = root / "artifacts" / "tilda" / f"{slug}_review.json"
-        screenshot_path = root / "screenshots" / "tilda" / f"{slug}_before_submit.png"
+        review_path = root / "artifacts" / "forms" / f"{slug}_review.json"
+        screenshot_path = root / "screenshots" / "forms" / f"{slug}_before_submit.png"
         review_path.parent.mkdir(parents=True, exist_ok=True)
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
         session.page.screenshot(path=str(screenshot_path), full_page=True)
@@ -202,6 +205,7 @@ class ApplicationManager:
             uploaded_filename=session.filled.uploaded_filename,
             review_path=review_path,
             screenshot_path=screenshot_path,
+            field_sources=session.filled.field_sources,
         )
         temporary = review_path.with_suffix(".tmp")
         temporary.write_text(
@@ -241,7 +245,7 @@ class ApplicationManager:
             record = store.application(source, source_id)
         if record is None or record.status != "review_ready" or record.review_id != review_id:
             raise ApplicationStateError("Заявка не готова к отправке")
-        current = select_form(inspect_tilda(session.page), session.probe.form_index)
+        current = select_form(inspect_forms(session.page), session.probe.form_index)
         if current.url != session.probe.url or current.fields != session.probe.fields:
             raise ApplicationStateError("Форма изменилась после проверки")
         fingerprint, missing = self._form_state(session)
@@ -249,8 +253,11 @@ class ApplicationManager:
             raise ApplicationStateError("Остались незаполненные обязательные поля")
         if fingerprint != session.fingerprint:
             raise ApplicationStateError("Данные формы изменились; нажмите «Проверить снова»")
-        form = session.page.locator("form.t-form").nth(session.probe.form_index)
-        submit_button = form.locator("button[type=submit], input[type=submit], .t-submit")
+        selector = "form.t-form" if session.probe.family == "tilda" else "form"
+        form = session.page.locator(selector).nth(session.probe.form_index)
+        submit_button = form.locator(
+            "button[type=submit], input[type=submit], button:not([type]), .t-submit"
+        )
         if submit_button.count() != 1 or not submit_button.first.is_visible():
             raise ApplicationStateError("Не найдена однозначная кнопка отправки")
 
@@ -262,28 +269,36 @@ class ApplicationManager:
             session.page.evaluate("window.__jobApplicationApproved = true")
             submit_button.click(timeout=10_000)
             session.page.wait_for_function(
-                """({index, originalUrl}) => {
-                  const form = document.querySelectorAll('form.t-form')[index];
+                """({index, originalUrl, selector}) => {
+                  const form = document.querySelectorAll(selector)[index];
                   const successBox = Array.from(form?.querySelectorAll('.t-form__successbox') || [])
                     .some(box => box.getClientRects().length && box.textContent.trim());
                   const thankYouPage = location.href !== originalUrl &&
                     /спасибо|thank you|заявка отправлена|application submitted/i
                       .test(document.body?.innerText || '');
-                  return successBox || thankYouPage;
+                  const inlineSuccess = selector === 'form' &&
+                    (!form || !form.getClientRects().length) &&
+                    /спасибо|thank you|заявка отправлена|application submitted/i
+                      .test(document.body?.innerText || '');
+                  return successBox || thankYouPage || inlineSuccess;
                 }""",
-                arg={"index": session.probe.form_index, "originalUrl": session.probe.url},
+                arg={
+                    "index": session.probe.form_index,
+                    "originalUrl": session.probe.url,
+                    "selector": selector,
+                },
                 timeout=self.success_timeout_ms,
             )
             success_text = session.page.evaluate(
-                """index => {
-                  const form = document.querySelectorAll('form.t-form')[index];
+                """({index, selector}) => {
+                  const form = document.querySelectorAll(selector)[index];
                   const box = Array.from(form?.querySelectorAll('.t-form__successbox') || [])
                     .find(item => item.getClientRects().length && item.textContent.trim());
                   if (box) return box.textContent.trim();
                   return (document.body?.innerText || '')
                     .match(/спасибо|thank you|заявка отправлена|application submitted/i)?.[0] || '';
                 }""",
-                session.probe.form_index,
+                {"index": session.probe.form_index, "selector": selector},
             )
             if success_text.strip():
                 status = "submitted"
@@ -298,8 +313,8 @@ class ApplicationManager:
 
         root = self.config.profile_path.resolve().parent
         slug = f"{source}_{source_id}_{review_id}"
-        evidence_path = root / "artifacts" / "tilda" / f"{slug}_submission.json"
-        screenshot_path = root / "screenshots" / "tilda" / f"{slug}_after_submit.png"
+        evidence_path = root / "artifacts" / "forms" / f"{slug}_submission.json"
+        screenshot_path = root / "screenshots" / "forms" / f"{slug}_after_submit.png"
         try:
             session.page.screenshot(path=str(screenshot_path), full_page=True)
         except PlaywrightError:

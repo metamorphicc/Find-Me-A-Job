@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Self
 
+from job_search_automation.dedup import canonical_key
 from job_search_automation.models import Vacancy
 
 SCHEMA = """
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS vacancies (
     area TEXT NOT NULL,
     published_at TEXT NOT NULL,
     payload_json TEXT NOT NULL,
+    canonical_key TEXT,
     status TEXT NOT NULL DEFAULT 'discovered',
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
@@ -65,6 +67,22 @@ class VacancyStore:
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
+        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(vacancies)")}
+        if "canonical_key" not in columns:
+            self.connection.execute("ALTER TABLE vacancies ADD COLUMN canonical_key TEXT")
+        rows = self.connection.execute(
+            "SELECT source, source_id, payload_json FROM vacancies WHERE canonical_key IS NULL"
+        ).fetchall()
+        with self.connection:
+            for row in rows:
+                vacancy = Vacancy.from_dict(json.loads(row["payload_json"]))
+                self.connection.execute(
+                    "UPDATE vacancies SET canonical_key = ? WHERE source = ? AND source_id = ?",
+                    (canonical_key(vacancy), row["source"], row["source_id"]),
+                )
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_vacancies_canonical ON vacancies(canonical_key)"
+            )
 
     def close(self) -> None:
         self.connection.close()
@@ -80,18 +98,25 @@ class VacancyStore:
         new_items: list[Vacancy] = []
         with self.connection:
             for vacancy in vacancies:
+                key = canonical_key(vacancy)
                 exists = self.connection.execute(
                     "SELECT 1 FROM vacancies WHERE source = ? AND source_id = ?",
                     (vacancy.source, vacancy.source_id),
                 ).fetchone()
-                if exists is None:
+                duplicate = self.connection.execute(
+                    """SELECT 1 FROM vacancies
+                    WHERE canonical_key = ? AND source != ? AND status != 'duplicate'
+                    LIMIT 1""",
+                    (key, vacancy.source),
+                ).fetchone()
+                if exists is None and duplicate is None:
                     new_items.append(vacancy)
                 self.connection.execute(
                     """
                     INSERT INTO vacancies (
                         source, source_id, title, company, url, area, published_at,
-                        payload_json, first_seen, last_seen
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        payload_json, canonical_key, status, first_seen, last_seen
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source, source_id) DO UPDATE SET
                         title = excluded.title,
                         company = excluded.company,
@@ -99,6 +124,7 @@ class VacancyStore:
                         area = excluded.area,
                         published_at = excluded.published_at,
                         payload_json = excluded.payload_json,
+                        canonical_key = excluded.canonical_key,
                         last_seen = excluded.last_seen
                     """,
                     (
@@ -110,6 +136,8 @@ class VacancyStore:
                         vacancy.area,
                         vacancy.published_at,
                         json.dumps(vacancy.to_dict(), ensure_ascii=False),
+                        key,
+                        "duplicate" if duplicate is not None else "discovered",
                         now,
                         now,
                     ),
@@ -121,7 +149,7 @@ class VacancyStore:
             """
             SELECT source, source_id, title, company, url, area, published_at,
                    status, first_seen, last_seen
-            FROM vacancies
+            FROM vacancies WHERE status != 'duplicate'
             ORDER BY first_seen DESC
             LIMIT ?
             """,
@@ -131,7 +159,8 @@ class VacancyStore:
 
     def recent_vacancies(self, limit: int = 5, offset: int = 0) -> list[Vacancy]:
         rows = self.connection.execute(
-            "SELECT payload_json FROM vacancies ORDER BY first_seen DESC, source_id DESC LIMIT ? OFFSET ?",
+            "SELECT payload_json FROM vacancies WHERE status != 'duplicate' "
+            "ORDER BY first_seen DESC, source_id DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
         return [Vacancy.from_dict(json.loads(row["payload_json"])) for row in rows]
@@ -144,7 +173,9 @@ class VacancyStore:
         return Vacancy.from_dict(json.loads(row["payload_json"])) if row else None
 
     def count(self) -> int:
-        row = self.connection.execute("SELECT COUNT(*) FROM vacancies").fetchone()
+        row = self.connection.execute(
+            "SELECT COUNT(*) FROM vacancies WHERE status != 'duplicate'"
+        ).fetchone()
         return int(row[0])
 
     def application(self, source: str, source_id: str) -> ApplicationRecord | None:

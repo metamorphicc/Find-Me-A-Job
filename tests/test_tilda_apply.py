@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -112,5 +113,39 @@ def test_uploadcare_requires_confirmed_widget_file_and_cdn(monkeypatch, tmp_path
 
             assert calls == [("https://upload.uploadcare.com/base/", "public-test", "cv.pdf", 90)]
             assert uuid in locator.input_value()
+        finally:
+            browser.close()
+
+
+def test_form_values_use_template_then_profile_facts(tmp_path) -> None:
+    html = """
+    <form class="t-form">
+      <input name="Salary" type="text" required>
+      <input name="GitHub" type="text" required>
+      <button type="submit">Send</button>
+    </form>
+    """
+    candidate = replace(
+        profile(""), facts=(("Salary", "90000"), ("GitHub", "https://github.com/example"))
+    )
+    template = replace(DEFAULT_TEMPLATES[-1], form_values=(("Salary", "100000"),))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route("**/*", lambda route: route.fulfill(body=html, content_type="text/html"))
+            page.goto("https://example.test/form")
+            result = fill_tilda(
+                page,
+                select_form(inspect_tilda(page)),
+                candidate,
+                tmp_path / "profile.json",
+                sample(),
+                template,
+            )
+            assert page.locator('[name="Salary"]').input_value() == "100000"
+            assert page.locator('[name="GitHub"]').input_value() == "https://github.com/example"
+            assert "Salary: шаблон" in result.field_sources
+            assert "GitHub: профиль: доп. факт" in result.field_sources
         finally:
             browser.close()

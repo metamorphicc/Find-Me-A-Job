@@ -1,0 +1,32 @@
+[search]
+queries = ["Python", "backend", "frontend"]
+sources = ["hh", "remotive", "wwr", "freelancer"]
+kinds = ["job", "freelance"]
+excluded_keywords = []
+area_ids = ["113"]
+experience_ids = ["noExperience", "between1And3"]
+remote_only = true
+strict_remote = true
+days = 7
+per_query = 50
+
+[hh]
+base_url = "https://api.hh.ru"
+user_agent = "JobSearchAutomation/0.1 (YOUR_EMAIL)"
+timeout_seconds = 20
+browser_fallback = true
+
+[storage]
+database = "data/jobs.db"
+reports_dir = "reports"
+
+[telegram]
+bot_token = ""
+allowed_user_ids = []
+page_size = 5
+profile = "profile.json"
+
+[schedule]
+enabled = false
+time = "09:00"
+timezone = "Asia/Novosibirsk"

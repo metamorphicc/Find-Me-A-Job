@@ -1,0 +1,19 @@
+[Unit]
+Description=Private job search Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobbot
+WorkingDirectory=/opt/find-me-a-job
+Environment=JOB_SEARCH_HEADLESS=1
+EnvironmentFile=-/opt/find-me-a-job/.env
+ExecStart=/opt/find-me-a-job/.venv/bin/job-search bot
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
