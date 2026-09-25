@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from job_search_automation.categories import CATEGORY_LABELS
+from job_search_automation.categories import CATEGORY_LABELS, DEFAULT_TECH_TITLES, HH_ROLE_LABELS
 
 
 class ConfigError(ValueError):
@@ -32,6 +32,12 @@ class SearchConfig:
     sources: tuple[str, ...] = ("hh",)
     kinds: tuple[str, ...] = ("job", "freelance")
     categories: tuple[str, ...] = ()
+    role_ids: tuple[str, ...] = ()
+    title_keywords: tuple[str, ...] = ()
+    employment_forms: tuple[str, ...] = ()
+    salary_min: int | None = None
+    salary_currency: str = "RUR"
+    salary_required: bool = False
 
 
 @dc(frozen=True, slots=True)
@@ -141,6 +147,20 @@ def _validate_search(search: SearchConfig) -> SearchConfig:
         raise ConfigError("search.kinds must include job or freelance")
     if set(search.categories) - CATEGORY_LABELS.keys():
         raise ConfigError("search.categories contains an unknown category")
+    if set(search.role_ids) - HH_ROLE_LABELS.keys():
+        raise ConfigError("search.role_ids contains an unknown HH role")
+    if set(search.employment_forms) - {"FULL", "PART", "PROJECT", "FLY_IN_FLY_OUT"}:
+        raise ConfigError("search.employment_forms contains an unknown HH employment form")
+    if search.salary_min is not None and (
+        not isinstance(search.salary_min, int)
+        or isinstance(search.salary_min, bool)
+        or search.salary_min < 0
+    ):
+        raise ConfigError("search.salary_min must be a nonnegative integer")
+    if search.salary_currency not in {"RUR", "USD", "EUR"}:
+        raise ConfigError("search.salary_currency must be RUR, USD or EUR")
+    if not isinstance(search.salary_required, bool):
+        raise ConfigError("search.salary_required must be true or false")
     return search
 
 
@@ -170,6 +190,12 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         sources=_strings(raw.get("sources", list(base.sources)), "saved sources"),
         kinds=_strings(raw.get("kinds", list(base.kinds)), "saved kinds"),
         categories=_strings(raw.get("categories", list(base.categories)), "saved categories"),
+        role_ids=_strings(raw.get("role_ids", list(base.role_ids)), "saved role_ids"),
+        title_keywords=_strings(raw.get("title_keywords", list(base.title_keywords)), "saved title_keywords"),
+        employment_forms=_strings(raw.get("employment_forms", list(base.employment_forms)), "saved employment_forms"),
+        salary_min=raw.get("salary_min", base.salary_min),
+        salary_currency=raw.get("salary_currency", base.salary_currency),
+        salary_required=raw.get("salary_required", base.salary_required),
     ))
 
 
@@ -234,6 +260,14 @@ def load_config(path: str | Path) -> AppConfig:
         categories=_strings(
             search_raw.get("categories", ["software", "it_ops"]), "search.categories"
         ),
+        role_ids=_strings(search_raw.get("role_ids", []), "search.role_ids"),
+        title_keywords=_strings(
+            search_raw.get("title_keywords", list(DEFAULT_TECH_TITLES)), "search.title_keywords"
+        ),
+        employment_forms=_strings(search_raw.get("employment_forms", []), "search.employment_forms"),
+        salary_min=search_raw.get("salary_min"),
+        salary_currency=str(search_raw.get("salary_currency", "RUR")),
+        salary_required=search_raw.get("salary_required", False),
     )
     _validate_search(search)
     schedule = validate_schedule(

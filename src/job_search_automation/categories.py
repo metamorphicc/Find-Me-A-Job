@@ -7,10 +7,31 @@ CATEGORY_LABELS = {
     "it_ops": "Системы, сети и техподдержка",
 }
 
+DEFAULT_TECH_TITLES = (
+    "разработчик", "программист", "тестировщик", "инженер",
+    "администратор", "техподдерж", "аналитик данных",
+    "developer", "engineer", "programmer", "tester", "qa",
+    "devops", "sysadmin", "technical support", "data analyst",
+)
+
 # IDs from the HH professional roles directory, not free-text title matches.
 HH_ROLES = {
     "software": ("96", "124", "160", "165"),
     "it_ops": ("112", "113", "114", "116", "121"),
+}
+
+# A small, verified subset of HH's /professional_roles directory. Keeping the
+# exact IDs selectable avoids treating every IT role as equally relevant.
+HH_ROLE_LABELS = {
+    "96": "Разработчик",
+    "124": "Тестировщик",
+    "160": "DevOps-инженер",
+    "165": "Дата-сайентист",
+    "112": "Сетевой инженер",
+    "113": "Системный администратор",
+    "114": "Системный инженер",
+    "116": "Информационная безопасность",
+    "121": "Техническая поддержка",
 }
 
 REMOTIVE_CATEGORIES = {

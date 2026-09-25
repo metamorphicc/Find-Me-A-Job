@@ -14,7 +14,7 @@ import requests
 from playwright.sync_api import Error as PlaywrightError
 
 from job_search_automation.application_workflow import ApplicationManager, ReviewSummary
-from job_search_automation.categories import CATEGORY_LABELS
+from job_search_automation.categories import CATEGORY_LABELS, HH_ROLE_LABELS
 from job_search_automation.config import (
     AppConfig,
     ConfigError,
@@ -96,6 +96,13 @@ SOURCE_LABELS = {
     "wwr": "We Work Remotely",
     "fl": "FL.ru RSS",
     "freelancer": "Freelancer.com",
+}
+
+EMPLOYMENT_LABELS = {
+    "FULL": "Полная занятость",
+    "PART": "Частичная занятость",
+    "PROJECT": "Подработка",
+    "FLY_IN_FLY_OUT": "Вахта",
 }
 
 
@@ -305,6 +312,8 @@ class JobTelegramBot:
             "Фильтры поиска:\n"
             f"Режим: {'категории' if settings.categories else 'текстовые запросы'}\n"
             f"Профессии: {', '.join(CATEGORY_LABELS[name] for name in settings.categories) or 'любые'}\n"
+            f"Роли HH: {', '.join(HH_ROLE_LABELS[name] for name in settings.role_ids) or 'все в категориях'}\n"
+            f"Слова в названии: {', '.join(settings.title_keywords) or 'не заданы'}\n"
             f"Запросы: {', '.join(settings.queries) or 'нет'}"
             f"{' (сейчас не используются)' if settings.categories else ''}\n"
             f"Источники: {', '.join(settings.sources)}\n"
@@ -312,6 +321,9 @@ class JobTelegramBot:
             f"Удалённо: {'да' if settings.remote_only else 'нет'}\n"
             f"Только полностью удалённо: {'да' if settings.strict_remote else 'нет'}\n"
             f"Опыт: {experience}\n"
+            f"Занятость HH: {', '.join(EMPLOYMENT_LABELS[name] for name in settings.employment_forms) or 'любая'}\n"
+            f"Зарплата: {'от ' + str(settings.salary_min) + ' ' + settings.salary_currency if settings.salary_min is not None else 'без минимума'}"
+            f"; только с указанной: {'да' if settings.salary_required else 'нет'}\n"
             f"Регион: {area}\n"
             f"Опубликовано за: {settings.days} дн.\n"
             f"На каждый запрос: {settings.per_query}\n"
@@ -319,6 +331,8 @@ class JobTelegramBot:
             reply_markup={
                 "inline_keyboard": [
                     [{"text": "Профессиональные категории", "callback_data": "choose:categories"}],
+                    [{"text": "Точные роли HH", "callback_data": "choose:roles"}],
+                    [{"text": "Слова в названии", "callback_data": "edit:search:title_keywords"}],
                     [{"text": "Запросы (текстовый режим)", "callback_data": "edit:search:queries"}],
                     [
                         {"text": "Источники", "callback_data": "choose:sources"},
@@ -339,6 +353,10 @@ class JobTelegramBot:
                         {"text": "Регион", "callback_data": "choose:area"},
                     ],
                     [
+                        {"text": "Занятость HH", "callback_data": "choose:employment"},
+                        {"text": "Зарплата", "callback_data": "choose:salary"},
+                    ],
+                    [
                         {"text": "Давность", "callback_data": "choose:days"},
                         {"text": "Лимит", "callback_data": "choose:limit"},
                     ],
@@ -351,11 +369,18 @@ class JobTelegramBot:
     def show_profile_settings(self, chat_id: int) -> None:
         try:
             fields = read_profile_fields(self.config.profile_path)
+            missing = [
+                PROFILE_LABELS[key] for key in ("name", "about", "contact")
+                if not fields.get(key) or str(fields[key]).startswith("REPLACE_WITH_")
+            ]
             try:
                 load_profile(self.config.profile_path)
                 readiness = "Готовый текст отклика включён."
             except ProfileError:
-                readiness = "Текст отклика пока не готов; поиск работает без него."
+                readiness = (
+                    "Для текста отклика заполните: " + ", ".join(missing) + "."
+                    if missing else "Проверьте данные профиля: текст отклика пока недоступен."
+                )
         except ProfileError as exc:
             self.api.send_message(chat_id, f"Не удалось прочитать профиль: {exc}")
             return
@@ -379,7 +404,8 @@ class JobTelegramBot:
         buttons.append([{"text": "← Настройки", "callback_data": "settings"}])
         self.api.send_message(
             chat_id,
-            f"{readiness}\n" + "\n".join(display),
+            f"{readiness}\nДанные хранятся только на этом компьютере. "
+            "В анкету подставляются лишь заполненные факты.\n" + "\n".join(display),
             reply_markup={"inline_keyboard": buttons},
         )
 
@@ -500,13 +526,17 @@ class JobTelegramBot:
                 if field not in {"name", "about", "contact"}
                 else ""
             )
-        elif kind == "search" and field in {"queries", "excluded_keywords", "area_ids"}:
+        elif kind == "search" and field in {
+            "queries", "excluded_keywords", "area_ids", "title_keywords", "salary_min"
+        }:
             label = {
                 "queries": "Поисковые запросы",
                 "excluded_keywords": "Исключаемые слова",
                 "area_ids": "ID регионов HeadHunter",
+                "title_keywords": "Обязательные слова или фразы в названии (достаточно одного)",
+                "salary_min": "Минимальная зарплата числом в выбранной валюте",
             }[field]
-            extra = " Перечислите через запятую или с новой строки."
+            extra = "" if field == "salary_min" else " Перечислите через запятую или с новой строки."
             if field != "queries":
                 extra += " Отправьте '-' для очистки."
         else:
@@ -542,19 +572,26 @@ class JobTelegramBot:
                     updated, schedule_settings_path(self.config.database_path)
                 )
             else:
+                if field == "salary_min":
+                    value = None if text.strip() == "-" else int(text.strip())
+                    self._save_search_settings(salary_min=value)
+                    del self.pending_edits[chat_id]
+                    self.api.send_message(chat_id, "Сохранено.")
+                    self.show_search_settings(chat_id)
+                    return
                 items = tuple(item.strip() for item in re.split(r"[,;\n]", text) if item.strip())
                 if text.strip() == "-":
                     items = ()
                 if field == "queries" and not items:
                     raise ConfigError("Укажите хотя бы один поисковый запрос")
-                if len(items) > (10 if field == "queries" else 30) or any(
+                if len(items) > (10 if field in {"queries", "title_keywords"} else 30) or any(
                     len(item) > 80 for item in items
                 ):
                     raise ConfigError("Слишком много значений или слишком длинный текст")
                 if field == "area_ids" and any(not item.isdigit() for item in items):
                     raise ConfigError("Для региона нужны числовые ID HeadHunter")
                 self._save_search_settings(**{field: items})
-        except (ConfigError, ProfileError, TemplateError, OSError) as exc:
+        except (ConfigError, ProfileError, TemplateError, OSError, ValueError) as exc:
             self.api.send_message(chat_id, f"Не сохранил: {exc}. Попробуйте ещё раз или /cancel.")
             return
         del self.pending_edits[chat_id]
@@ -605,6 +642,30 @@ class JobTelegramBot:
             buttons.append(
                 [{"text": "Поиск по запросам вместо категорий", "callback_data": "set:categories:any"}]
             )
+        elif choice == "roles":
+            settings = self._search_settings()
+            buttons = [
+                [{"text": f"{'✓' if role in settings.role_ids else '○'} {label}",
+                  "callback_data": f"toggle:role:{role}"}]
+                for role, label in HH_ROLE_LABELS.items()
+            ]
+            buttons.append([{"text": "Все роли категорий", "callback_data": "set:roles:any"}])
+        elif choice == "employment":
+            settings = self._search_settings()
+            buttons = [
+                [{"text": f"{'✓' if form in settings.employment_forms else '○'} {label}",
+                  "callback_data": f"toggle:employment:{form}"}]
+                for form, label in EMPLOYMENT_LABELS.items()
+            ]
+        elif choice == "salary":
+            settings = self._search_settings()
+            buttons = [
+                [{"text": "Минимальная сумма", "callback_data": "edit:search:salary_min"}],
+                [{"text": f"{'✓' if settings.salary_required else '○'} Только с зарплатой",
+                  "callback_data": "toggle:salary_required"}],
+                *[[{"text": f"{'✓' if settings.salary_currency == code else '○'} {code}",
+                    "callback_data": f"set:currency:{code}"}] for code in ("RUR", "USD", "EUR")],
+            ]
         elif choice == "experience":
             buttons = [
                 [{"text": "Любой опыт", "callback_data": "set:experience:any"}],
@@ -697,6 +758,43 @@ class JobTelegramBot:
                     categories=tuple(name for name in CATEGORY_LABELS if name in selected)
                 )
                 self._show_choices(chat_id, "categories")
+                return
+            elif action.startswith("toggle:role:"):
+                role = action.removeprefix("toggle:role:")
+                if role not in HH_ROLE_LABELS:
+                    return
+                selected = set(settings.role_ids)
+                selected.symmetric_difference_update({role})
+                self._save_search_settings(
+                    role_ids=tuple(name for name in HH_ROLE_LABELS if name in selected)
+                )
+                self._show_choices(chat_id, "roles")
+                return
+            elif action == "set:roles:any":
+                self._save_search_settings(role_ids=())
+                self._show_choices(chat_id, "roles")
+                return
+            elif action.startswith("toggle:employment:"):
+                form = action.removeprefix("toggle:employment:")
+                if form not in EMPLOYMENT_LABELS:
+                    return
+                selected = set(settings.employment_forms)
+                selected.symmetric_difference_update({form})
+                self._save_search_settings(
+                    employment_forms=tuple(name for name in EMPLOYMENT_LABELS if name in selected)
+                )
+                self._show_choices(chat_id, "employment")
+                return
+            elif action == "toggle:salary_required":
+                self._save_search_settings(salary_required=not settings.salary_required)
+                self._show_choices(chat_id, "salary")
+                return
+            elif action.startswith("set:currency:"):
+                code = action.removeprefix("set:currency:")
+                if code not in {"RUR", "USD", "EUR"}:
+                    return
+                self._save_search_settings(salary_currency=code)
+                self._show_choices(chat_id, "salary")
                 return
             elif action == "set:categories:any":
                 self._save_search_settings(categories=())

@@ -75,3 +75,31 @@ def test_category_search_uses_professional_roles_instead_of_query(monkeypatch) -
     assert not any(name == "text" for name, _ in captured["params"])
     assert ("professional_role", "96") in captured["params"]
     assert result[0].categories == ("software",)
+
+
+def test_precise_hh_filters_are_sent_to_api(monkeypatch) -> None:
+    client = HhClient(HhConfig("https://api.hh.ru", "test", 1))
+    captured = {}
+
+    def fake_get(url, *, params, timeout):
+        captured["params"] = params
+        return FakeResponse()
+
+    monkeypatch.setattr(client.session, "get", fake_get)
+    search = SearchConfig(
+        (), (), (), (), True, True, 7, 20,
+        categories=("software",), role_ids=("96",),
+        title_keywords=("Python",), employment_forms=("FULL",),
+        salary_min=100000, salary_currency="RUR", salary_required=True,
+    )
+    client.search(search)
+
+    params = captured["params"]
+    assert ("text", "Python") in params
+    assert ("search_field", "name") in params
+    assert ("professional_role", "96") in params
+    assert ("professional_role", "124") not in params
+    assert ("employment_form", "FULL") in params
+    assert ("salary", 100000) in params
+    assert ("currency", "RUR") in params
+    assert ("label", "with_salary") in params

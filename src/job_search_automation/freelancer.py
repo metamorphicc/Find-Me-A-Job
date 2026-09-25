@@ -26,7 +26,7 @@ class FreelancerClient:
         cutoff = datetime.now(UTC) - timedelta(days=settings.days)
         for query in ("",) if settings.categories else settings.queries:
             params: dict[str, object] = {
-                "limit": min(settings.per_query, 100),
+                "limit": 100 if settings.title_keywords else min(settings.per_query, 100),
                 "sort_field": "time_updated",
                 "sort_order": "desc",
             }
@@ -56,6 +56,9 @@ class FreelancerClient:
                 if vacancy is not None and (
                     not settings.categories
                     or set(vacancy.categories).intersection(settings.categories)
+                ) and (
+                    not settings.title_keywords
+                    or any(word.casefold() in vacancy.title.casefold() for word in settings.title_keywords)
                 ):
                     found[vacancy.source_id] = vacancy
         return list(found.values())

@@ -314,6 +314,26 @@ def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:
     assert saved == used_searches[0]
 
 
+def test_bot_edits_precise_search_filters(tmp_path) -> None:
+    settings = config(tmp_path)
+    bot = JobTelegramBot(settings, FakeApi())
+
+    bot.handle_update(callback("toggle:role:96"))
+    bot.handle_update(callback("toggle:employment:FULL"))
+    bot.handle_update(callback("edit:search:title_keywords"))
+    bot.handle_update(message("developer, разработчик"))
+    bot.handle_update(callback("edit:search:salary_min"))
+    bot.handle_update(message("100000"))
+    bot.handle_update(callback("toggle:salary_required"))
+
+    saved = bot._search_settings()
+    assert saved.role_ids == ("96",)
+    assert saved.employment_forms == ("FULL",)
+    assert saved.title_keywords == ("developer", "разработчик")
+    assert saved.salary_min == 100000
+    assert saved.salary_required is True
+
+
 def test_settings_back_returns_to_main_menu(tmp_path) -> None:
     api = FakeApi()
     bot = JobTelegramBot(config(tmp_path), api)

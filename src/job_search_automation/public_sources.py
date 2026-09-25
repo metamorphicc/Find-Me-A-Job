@@ -85,6 +85,10 @@ class RemotiveClient:
                 query = ""
             else:
                 query = _query(title, summary, settings.queries)
+            if settings.title_keywords and not any(
+                word.casefold() in title.casefold() for word in settings.title_keywords
+            ):
+                continue
             published = str(item.get("publication_date") or "")
             url = str(item.get("url") or "")
             if query is None or not _recent(published, settings.days) or not url.startswith("https://remotive.com/"):
@@ -155,6 +159,10 @@ class RssClient:
                 query = ""
             else:
                 query = _query(title, summary, settings.queries)
+            if settings.title_keywords and not any(
+                word.casefold() in title.casefold() for word in settings.title_keywords
+            ):
+                continue
             published = _item_text(item, "pubDate")
             url = _item_text(item, "link")
             host = urlparse(url).hostname or ""

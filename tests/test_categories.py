@@ -6,6 +6,7 @@ def test_new_and_saved_old_config_default_to_it_categories(tmp_path):
     path.write_text('[search]\nqueries = ["Python"]\n', encoding="utf-8")
     config = load_config(path)
     assert config.search.categories == ("software", "it_ops")
+    assert "разработчик" in config.search.title_keywords
 
     saved = search_settings_path(config.database_path)
     saved.parent.mkdir(parents=True)
@@ -16,6 +17,7 @@ def test_new_and_saved_old_config_default_to_it_categories(tmp_path):
         encoding="utf-8",
     )
     assert load_search_settings(config.search, saved).categories == ("software", "it_ops")
+    assert "разработчик" in load_search_settings(config.search, saved).title_keywords
 
 
 def test_category_mode_allows_empty_text_queries(tmp_path):

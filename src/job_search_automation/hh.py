@@ -75,6 +75,7 @@ def vacancy_from_hh(
         summary=summary,
         query=query,
         categories=categories,
+        professional_role_ids=tuple(sorted(role_ids)),
     )
 
 
@@ -121,7 +122,8 @@ class HhClient:
 
     def _search_api(self, search: SearchConfig) -> list[Vacancy]:
         unique: dict[str, Vacancy] = {}
-        for query in ("",) if search.categories else search.queries:
+        queries = search.title_keywords or (("",) if search.categories else search.queries)
+        for query in queries:
             for vacancy in self._search_query(query, search):
                 unique.setdefault(vacancy.source_id, vacancy)
         return list(unique.values())
@@ -133,7 +135,8 @@ class HhClient:
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(locale="ru-RU")
                 try:
-                    for query in ("",) if search.categories else search.queries:
+                    queries = search.title_keywords or (("",) if search.categories else search.queries)
+                    for query in queries:
                         page_number = 0
                         query_count = 0
                         while query_count < search.per_query:
@@ -144,11 +147,19 @@ class HhClient:
                             ]
                             if query:
                                 params.append(("text", query))
+                            if search.title_keywords:
+                                params.append(("search_field", "name"))
                             params.extend(
-                                ("professional_role", role) for role in hh_role_ids(search.categories)
+                                ("professional_role", role)
+                                for role in (search.role_ids or hh_role_ids(search.categories))
                             )
                             params.extend(("area", value) for value in search.area_ids)
                             params.extend(("experience", value) for value in search.experience_ids)
+                            params.extend(("employment_form", value) for value in search.employment_forms)
+                            if search.salary_min is not None:
+                                params.extend((('salary', search.salary_min), ('currency', search.salary_currency)))
+                            if search.salary_required or search.salary_min is not None:
+                                params.append(("label", "with_salary"))
                             if search.remote_only:
                                 params.append(("work_format", "REMOTE"))
                             url = f"https://hh.ru/search/vacancy?{urlencode(params)}"
@@ -170,7 +181,8 @@ class HhClient:
 
                             for index in range(card_count):
                                 vacancy = self._vacancy_from_card(
-                                    titles.nth(index), query, search.categories
+                                    titles.nth(index), query, search.categories,
+                                    search.role_ids or hh_role_ids(search.categories),
                                 )
                                 unique.setdefault(vacancy.source_id, vacancy)
                                 query_count += 1
@@ -186,7 +198,8 @@ class HhClient:
         return list(unique.values())
 
     def _vacancy_from_card(
-        self, title: Locator, query: str, categories: tuple[str, ...] = ()
+        self, title: Locator, query: str, categories: tuple[str, ...] = (),
+        role_ids: tuple[str, ...] = (),
     ) -> Vacancy:
         card = title.locator("xpath=ancestor::div[@id][1]")
         url = str(title.get_attribute("href") or "")
@@ -228,6 +241,7 @@ class HhClient:
             summary=card_text,
             query=query,
             categories=categories,
+            professional_role_ids=role_ids,
         )
 
     def _search_query(self, query: str, search: SearchConfig) -> Iterable[Vacancy]:
@@ -246,11 +260,19 @@ class HhClient:
             ]
             if query:
                 params.append(("text", query))
+            if search.title_keywords:
+                params.append(("search_field", "name"))
             params.extend(
-                ("professional_role", role) for role in hh_role_ids(search.categories)
+                ("professional_role", role)
+                for role in (search.role_ids or hh_role_ids(search.categories))
             )
             params.extend(("area", area_id) for area_id in search.area_ids)
             params.extend(("experience", value) for value in search.experience_ids)
+            params.extend(("employment_form", value) for value in search.employment_forms)
+            if search.salary_min is not None:
+                params.extend((('salary', search.salary_min), ('currency', search.salary_currency)))
+            if search.salary_required or search.salary_min is not None:
+                params.append(("label", "with_salary"))
             if search.remote_only:
                 params.append(("work_format", "REMOTE"))
 
