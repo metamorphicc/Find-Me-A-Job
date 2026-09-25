@@ -35,6 +35,7 @@ class SearchConfig:
     role_ids: tuple[str, ...] = ()
     title_keywords: tuple[str, ...] = ()
     employment_forms: tuple[str, ...] = ()
+    work_schedules: tuple[str, ...] = ()
     salary_min: int | None = None
     salary_currency: str = "RUR"
     salary_required: bool = False
@@ -151,6 +152,14 @@ def _validate_search(search: SearchConfig) -> SearchConfig:
         raise ConfigError("search.role_ids contains an unknown HH role")
     if set(search.employment_forms) - {"FULL", "PART", "PROJECT", "FLY_IN_FLY_OUT"}:
         raise ConfigError("search.employment_forms contains an unknown HH employment form")
+    if set(search.work_schedules) - {
+        "FIVE_ON_TWO_OFF", "TWO_ON_TWO_OFF", "FLEXIBLE", "WEEKEND"
+    }:
+        raise ConfigError("search.work_schedules contains an unknown HH work schedule")
+    if set(search.experience_ids) - {
+        "noExperience", "between1And3", "between3And6", "moreThan6"
+    }:
+        raise ConfigError("search.experience_ids contains an unknown HH experience")
     if search.salary_min is not None and (
         not isinstance(search.salary_min, int)
         or isinstance(search.salary_min, bool)
@@ -193,6 +202,7 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         role_ids=_strings(raw.get("role_ids", list(base.role_ids)), "saved role_ids"),
         title_keywords=_strings(raw.get("title_keywords", list(base.title_keywords)), "saved title_keywords"),
         employment_forms=_strings(raw.get("employment_forms", list(base.employment_forms)), "saved employment_forms"),
+        work_schedules=_strings(raw.get("work_schedules", list(base.work_schedules)), "saved work_schedules"),
         salary_min=raw.get("salary_min", base.salary_min),
         salary_currency=raw.get("salary_currency", base.salary_currency),
         salary_required=raw.get("salary_required", base.salary_required),
@@ -265,6 +275,7 @@ def load_config(path: str | Path) -> AppConfig:
             search_raw.get("title_keywords", list(DEFAULT_TECH_TITLES)), "search.title_keywords"
         ),
         employment_forms=_strings(search_raw.get("employment_forms", []), "search.employment_forms"),
+        work_schedules=_strings(search_raw.get("work_schedules", []), "search.work_schedules"),
         salary_min=search_raw.get("salary_min"),
         salary_currency=str(search_raw.get("salary_currency", "RUR")),
         salary_required=search_raw.get("salary_required", False),

@@ -6,6 +6,7 @@ categories = ["software", "it_ops"] # Empty list uses the text queries below ins
 title_keywords = ["разработчик", "программист", "тестировщик", "инженер", "администратор", "техподдерж", "аналитик данных", "developer", "engineer", "programmer", "tester", "qa", "devops", "sysadmin", "technical support", "data analyst"]
 role_ids = [] # Optional exact HH roles, selected in the bot. Overrides broad HH categories.
 employment_forms = [] # HH only: FULL, PART, PROJECT, FLY_IN_FLY_OUT.
+work_schedules = [] # HH only: FIVE_ON_TWO_OFF, TWO_ON_TWO_OFF, FLEXIBLE, WEEKEND.
 # salary_min = 100000 # Monthly vacancy salary in salary_currency; excludes unspecified pay.
 salary_currency = "RUR"
 salary_required = false # Freelance project budgets are handled separately.

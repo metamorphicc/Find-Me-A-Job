@@ -107,6 +107,20 @@ EMPLOYMENT_LABELS = {
     "FLY_IN_FLY_OUT": "Вахта",
 }
 
+SCHEDULE_LABELS = {
+    "FIVE_ON_TWO_OFF": "5/2",
+    "TWO_ON_TWO_OFF": "2/2",
+    "FLEXIBLE": "Гибкий график",
+    "WEEKEND": "По выходным",
+}
+
+EXPERIENCE_LABELS = {
+    "noExperience": "без опыта",
+    "between1And3": "1–3 года",
+    "between3And6": "3–6 лет",
+    "moreThan6": "более 6 лет",
+}
+
 
 class TelegramApiError(RuntimeError):
     """Raised when the Telegram Bot API cannot complete a request."""
@@ -299,12 +313,7 @@ class JobTelegramBot:
         except ConfigError as exc:
             self.api.send_message(chat_id, f"Не удалось прочитать фильтры: {exc}")
             return
-        experience = {
-            (): "любой",
-            ("noExperience",): "без опыта",
-            ("between1And3",): "1–3 года",
-            ("noExperience", "between1And3"): "без опыта и 1–3 года",
-        }.get(settings.experience_ids, ", ".join(settings.experience_ids))
+        experience = ", ".join(EXPERIENCE_LABELS[name] for name in settings.experience_ids) or "любой"
         area = (
             "вся Россия"
             if settings.area_ids == ("113",)
@@ -325,6 +334,7 @@ class JobTelegramBot:
             f"Только полностью удалённо: {'да' if settings.strict_remote else 'нет'}\n"
             f"Опыт: {experience}\n"
             f"Занятость HH: {', '.join(EMPLOYMENT_LABELS[name] for name in settings.employment_forms) or 'любая'}\n"
+            f"График HH: {', '.join(SCHEDULE_LABELS[name] for name in settings.work_schedules) or 'любой'}\n"
             f"Зарплата: {'от ' + str(settings.salary_min) + ' ' + settings.salary_currency if settings.salary_min is not None else 'без минимума'}"
             f"; только с указанной: {'да' if settings.salary_required else 'нет'}\n"
             f"Регион: {area}\n"
@@ -357,8 +367,9 @@ class JobTelegramBot:
                     ],
                     [
                         {"text": "Занятость HH", "callback_data": "choose:employment"},
-                        {"text": "Зарплата", "callback_data": "choose:salary"},
+                        {"text": "График HH", "callback_data": "choose:work_schedule"},
                     ],
+                    [{"text": "Зарплата", "callback_data": "choose:salary"}],
                     [
                         {"text": "Давность", "callback_data": "choose:days"},
                         {"text": "Лимит", "callback_data": "choose:limit"},
@@ -673,6 +684,13 @@ class JobTelegramBot:
                   "callback_data": f"toggle:employment:{form}"}]
                 for form, label in EMPLOYMENT_LABELS.items()
             ]
+        elif choice == "work_schedule":
+            settings = self._search_settings()
+            buttons = [
+                [{"text": f"{'✓' if schedule in settings.work_schedules else '○'} {label}",
+                  "callback_data": f"toggle:work_schedule:{schedule}"}]
+                for schedule, label in SCHEDULE_LABELS.items()
+            ]
         elif choice == "salary":
             settings = self._search_settings()
             buttons = [
@@ -683,12 +701,13 @@ class JobTelegramBot:
                     "callback_data": f"set:currency:{code}"}] for code in ("RUR", "USD", "EUR")],
             ]
         elif choice == "experience":
+            settings = self._search_settings()
             buttons = [
-                [{"text": "Любой опыт", "callback_data": "set:experience:any"}],
-                [{"text": "Без опыта", "callback_data": "set:experience:entry"}],
-                [{"text": "1–3 года", "callback_data": "set:experience:one_three"}],
-                [{"text": "Без опыта + 1–3 года", "callback_data": "set:experience:junior"}],
+                [{"text": f"{'✓' if value in settings.experience_ids else '○'} {label}",
+                  "callback_data": f"toggle:experience:{value}"}]
+                for value, label in EXPERIENCE_LABELS.items()
             ]
+            buttons.append([{"text": "Любой опыт", "callback_data": "set:experience:any"}])
         elif choice == "area":
             buttons = [
                 [{"text": "Вся Россия", "callback_data": "set:area:ru"}],
@@ -801,6 +820,28 @@ class JobTelegramBot:
                 )
                 self._show_choices(chat_id, "employment")
                 return
+            elif action.startswith("toggle:work_schedule:"):
+                schedule = action.removeprefix("toggle:work_schedule:")
+                if schedule not in SCHEDULE_LABELS:
+                    return
+                selected = set(settings.work_schedules)
+                selected.symmetric_difference_update({schedule})
+                self._save_search_settings(
+                    work_schedules=tuple(name for name in SCHEDULE_LABELS if name in selected)
+                )
+                self._show_choices(chat_id, "work_schedule")
+                return
+            elif action.startswith("toggle:experience:"):
+                experience = action.removeprefix("toggle:experience:")
+                if experience not in EXPERIENCE_LABELS:
+                    return
+                selected = set(settings.experience_ids)
+                selected.symmetric_difference_update({experience})
+                self._save_search_settings(
+                    experience_ids=tuple(name for name in EXPERIENCE_LABELS if name in selected)
+                )
+                self._show_choices(chat_id, "experience")
+                return
             elif action == "toggle:salary_required":
                 self._save_search_settings(salary_required=not settings.salary_required)
                 self._show_choices(chat_id, "salary")
@@ -816,17 +857,17 @@ class JobTelegramBot:
                 self._save_search_settings(categories=())
                 self._show_choices(chat_id, "categories")
                 return
-            elif action.startswith("set:experience:"):
-                values = {
-                    "any": (),
-                    "entry": ("noExperience",),
-                    "one_three": ("between1And3",),
-                    "junior": ("noExperience", "between1And3"),
+            elif action == "set:experience:any":
+                self._save_search_settings(experience_ids=())
+            elif action in {
+                "set:experience:entry", "set:experience:one_three", "set:experience:junior"
+            }:
+                previous = {
+                    "set:experience:entry": ("noExperience",),
+                    "set:experience:one_three": ("between1And3",),
+                    "set:experience:junior": ("noExperience", "between1And3"),
                 }
-                choice = action.removeprefix("set:experience:")
-                if choice not in values:
-                    return
-                self._save_search_settings(experience_ids=values[choice])
+                self._save_search_settings(experience_ids=previous[action])
             elif action == "set:area:ru":
                 self._save_search_settings(area_ids=("113",))
             elif action == "set:area:any":

@@ -33,6 +33,15 @@ def _salary(item: dict[str, Any]) -> tuple[int | None, int | None, str | None, b
     return value.get("from"), value.get("to"), value.get("currency"), value.get("gross")
 
 
+def _search_queries(search: SearchConfig) -> tuple[str, ...]:
+    if search.title_keywords:
+        # HH supports OR in the text query language. One query avoids a separate
+        # HTTP/browser search for every title synonym in the candidate's list.
+        terms = tuple('"' + word.replace('"', '') + '"' for word in search.title_keywords)
+        return (" OR ".join(terms),)
+    return ("",) if search.categories else search.queries
+
+
 def vacancy_from_hh(
     item: dict[str, Any], query: str, selected_categories: tuple[str, ...] = ()
 ) -> Vacancy:
@@ -84,6 +93,29 @@ def _locator_text(parent: Locator, selector: str) -> str:
     return _clean_html(locator.first.inner_text()) if locator.count() else ""
 
 
+def _card_salary(card: Locator) -> tuple[int | None, int | None, str | None, bool | None]:
+    currency = card.locator('data[value="RUB"], data[value="USD"], data[value="EUR"]')
+    if not currency.count():
+        return None, None, None, None
+    amount_line = currency.first.locator("xpath=parent::span")
+    values = amount_line.locator("data[value]").evaluate_all(
+        "els => els.map(el => el.getAttribute('value'))"
+    )
+    amounts = [int(value) for value in values if value and value.isdigit()]
+    if not amounts:
+        return None, None, None, None
+    label = _clean_html(amount_line.inner_text()).casefold()
+    if len(amounts) >= 2:
+        salary_from, salary_to = amounts[:2]
+    elif label.startswith("до "):
+        salary_from, salary_to = None, amounts[0]
+    else:
+        salary_from, salary_to = amounts[0], None
+    code = currency.first.get_attribute("value")
+    gross = False if "на руки" in label else True if "до вычета" in label else None
+    return salary_from, salary_to, "RUR" if code == "RUB" else code, gross
+
+
 class HhClient:
     def __init__(self, config: HhConfig) -> None:
         self.config = config
@@ -122,8 +154,7 @@ class HhClient:
 
     def _search_api(self, search: SearchConfig) -> list[Vacancy]:
         unique: dict[str, Vacancy] = {}
-        queries = search.title_keywords or (("",) if search.categories else search.queries)
-        for query in queries:
+        for query in _search_queries(search):
             for vacancy in self._search_query(query, search):
                 unique.setdefault(vacancy.source_id, vacancy)
         return list(unique.values())
@@ -135,8 +166,7 @@ class HhClient:
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(locale="ru-RU")
                 try:
-                    queries = search.title_keywords or (("",) if search.categories else search.queries)
-                    for query in queries:
+                    for query in _search_queries(search):
                         page_number = 0
                         query_count = 0
                         while query_count < search.per_query:
@@ -156,6 +186,7 @@ class HhClient:
                             params.extend(("area", value) for value in search.area_ids)
                             params.extend(("experience", value) for value in search.experience_ids)
                             params.extend(("employment_form", value) for value in search.employment_forms)
+                            params.extend(("work_schedule_by_days", value) for value in search.work_schedules)
                             if search.salary_min is not None:
                                 params.extend((('salary', search.salary_min), ('currency', search.salary_currency)))
                             if search.salary_required or search.salary_min is not None:
@@ -221,6 +252,8 @@ class HhClient:
         if "разъезд" in folded:
             work_formats.append("FIELD_WORK")
 
+        salary_from, salary_to, salary_currency, salary_gross = _card_salary(card)
+
         return Vacancy(
             source="hh",
             source_id=source_id,
@@ -234,10 +267,10 @@ class HhClient:
             experience=_locator_text(card, '[data-qa^="vacancy-serp__vacancy-work-experience"]')
             or "Не указан",
             employment="Не указана",
-            salary_from=None,
-            salary_to=None,
-            salary_currency=None,
-            salary_gross=None,
+            salary_from=salary_from,
+            salary_to=salary_to,
+            salary_currency=salary_currency,
+            salary_gross=salary_gross,
             summary=card_text,
             query=query,
             categories=categories,
@@ -269,6 +302,7 @@ class HhClient:
             params.extend(("area", area_id) for area_id in search.area_ids)
             params.extend(("experience", value) for value in search.experience_ids)
             params.extend(("employment_form", value) for value in search.employment_forms)
+            params.extend(("work_schedule_by_days", value) for value in search.work_schedules)
             if search.salary_min is not None:
                 params.extend((('salary', search.salary_min), ('currency', search.salary_currency)))
             if search.salary_required or search.salary_min is not None:

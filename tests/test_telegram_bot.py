@@ -320,6 +320,8 @@ def test_bot_edits_precise_search_filters(tmp_path) -> None:
 
     bot.handle_update(callback("toggle:role:96"))
     bot.handle_update(callback("toggle:employment:FULL"))
+    bot.handle_update(callback("toggle:work_schedule:FIVE_ON_TWO_OFF"))
+    bot.handle_update(callback("toggle:experience:between3And6"))
     bot.handle_update(callback("edit:search:title_keywords"))
     bot.handle_update(message("developer, разработчик"))
     bot.handle_update(callback("edit:search:salary_min"))
@@ -329,6 +331,8 @@ def test_bot_edits_precise_search_filters(tmp_path) -> None:
     saved = bot._search_settings()
     assert saved.role_ids == ("96",)
     assert saved.employment_forms == ("FULL",)
+    assert saved.work_schedules == ("FIVE_ON_TWO_OFF",)
+    assert saved.experience_ids == ("between3And6",)
     assert saved.title_keywords == ("developer", "разработчик")
     assert saved.salary_min == 100000
     assert saved.salary_required is True
