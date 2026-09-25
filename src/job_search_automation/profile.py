@@ -35,6 +35,38 @@ EDITABLE_FIELDS = (
     "resume_path",
 )
 
+REQUIRED_REPLY_FIELDS = ("name", "about", "contact")
+
+
+def missing_reply_fields(raw: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        field for field in REQUIRED_REPLY_FIELDS
+        if not isinstance(raw.get(field), str)
+        or not raw[field].strip()
+        or raw[field].startswith("REPLACE_WITH_")
+    )
+
+
+def initialize_profile(path: str | Path) -> None:
+    """Create an ignored local profile without inventing candidate facts."""
+    profile_path = Path(path)
+    raw = read_profile_fields(profile_path)
+    changed = not profile_path.is_file()
+    for field in EDITABLE_FIELDS:
+        if field not in raw or (
+            isinstance(raw[field], str) and raw[field].startswith("REPLACE_WITH_")
+        ):
+            raw[field] = [] if field == "skills" else ""
+            changed = True
+    if "facts" not in raw:
+        raw["facts"] = {}
+        changed = True
+    if changed:
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = profile_path.with_name(f"{profile_path.name}.tmp")
+        temporary.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, profile_path)
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateProfile:

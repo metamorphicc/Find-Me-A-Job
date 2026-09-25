@@ -52,6 +52,14 @@ To inspect the most recently stored vacancies:
 
 The scan command discovers vacancies. It does not log in to HeadHunter or submit applications.
 
+Create a private profile skeleton without adding any invented personal details:
+
+```powershell
+.\.venv\Scripts\job-search.exe profile --init
+```
+
+The command reports which facts are still needed for ready-to-copy replies, without printing profile values. In Telegram, use `/profile` and **📋 Заполнить основу** to enter your name, factual introduction and contact one at a time. Email, phone, city, experience, education, portfolio, résumé path and custom facts can be added separately. The ignored local `profile.json` is never committed; do not put personal data in `profile.example.json`.
+
 To inspect a public employer form without filling or submitting it, run:
 
 ```powershell

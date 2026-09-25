@@ -441,6 +441,29 @@ def test_bot_edits_candidate_profile_and_fills_history_reply(tmp_path) -> None:
     assert json.loads(settings.profile_path.read_text(encoding="utf-8"))["name"] == "Иван"
 
 
+def test_profile_setup_guides_required_fields_without_inventing_optional_facts(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(message("/profile"))
+    assert settings.profile_path.is_file()
+    assert "Заполнить основу" in str(api.messages[-1][2])
+    bot.handle_update(callback("profile:setup"))
+    assert bot.pending_edits[42] == ("profile", "name")
+    bot.handle_update(message("Иван"))
+    assert bot.pending_edits[42] == ("profile", "about")
+    bot.handle_update(message("Пишу на Python"))
+    assert bot.pending_edits[42] == ("profile", "contact")
+    bot.handle_update(message("@candidate"))
+
+    raw = json.loads(settings.profile_path.read_text(encoding="utf-8"))
+    assert raw["name"] == "Иван"
+    assert raw["email"] == ""
+    assert 42 not in bot.profile_setup
+    assert "Готовый текст отклика включён" in api.messages[-1][1]
+
+
 def test_invalid_filter_edit_keeps_previous_settings(tmp_path) -> None:
     settings = config(tmp_path)
     api = FakeApi()

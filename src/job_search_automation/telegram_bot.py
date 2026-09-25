@@ -36,7 +36,9 @@ from job_search_automation.profile import (
     EDITABLE_FIELDS,
     CandidateProfile,
     ProfileError,
+    initialize_profile,
     load_profile,
+    missing_reply_fields,
     read_profile_fields,
     save_custom_fact,
     save_profile_field,
@@ -261,6 +263,7 @@ class JobTelegramBot:
         self.new_items: dict[int, list[Vacancy]] = {}
         self.history_items: dict[int, list[Vacancy]] = {}
         self.pending_edits: dict[int, tuple[str, str]] = {}
+        self.profile_setup: set[int] = set()
         self.applications = application_manager or ApplicationManager(
             config, headless=os.environ.get("JOB_SEARCH_HEADLESS") == "1"
         )
@@ -368,11 +371,9 @@ class JobTelegramBot:
 
     def show_profile_settings(self, chat_id: int) -> None:
         try:
+            initialize_profile(self.config.profile_path)
             fields = read_profile_fields(self.config.profile_path)
-            missing = [
-                PROFILE_LABELS[key] for key in ("name", "about", "contact")
-                if not fields.get(key) or str(fields[key]).startswith("REPLACE_WITH_")
-            ]
+            missing = [PROFILE_LABELS[key] for key in missing_reply_fields(fields)]
             try:
                 load_profile(self.config.profile_path)
                 readiness = "Готовый текст отклика включён."
@@ -396,7 +397,8 @@ class JobTelegramBot:
                 display.append(f"{key}: {_shorten(str(value), 100)}")
             if len(facts) > 10:
                 display.append(f"И ещё {len(facts) - 10} дополнительных фактов.")
-        buttons = [
+        buttons = [[{"text": "📋 Заполнить основу", "callback_data": "profile:setup"}]]
+        buttons += [
             [{"text": label, "callback_data": f"edit:profile:{field}"}]
             for field, label in PROFILE_LABELS.items()
         ]
@@ -404,13 +406,24 @@ class JobTelegramBot:
         buttons.append([{"text": "← Настройки", "callback_data": "settings"}])
         self.api.send_message(
             chat_id,
-            f"{readiness}\nДанные хранятся только на этом компьютере. "
-            "В анкету подставляются лишь заполненные факты.\n" + "\n".join(display),
+            f"{readiness}\nФайл профиля хранится локально; сообщения для редактирования "
+            "проходят через Telegram. В анкету подставляются лишь заполненные факты.\n"
+            + "\n".join(display),
             reply_markup={"inline_keyboard": buttons},
         )
 
     def _reply_templates(self) -> tuple[ReplyTemplate, ...]:
         return load_templates(templates_path(self.config.database_path))
+
+    def _next_profile_setup_field(self, chat_id: int) -> None:
+        initialize_profile(self.config.profile_path)
+        missing = missing_reply_fields(read_profile_fields(self.config.profile_path))
+        if missing:
+            self._begin_edit(chat_id, "profile", missing[0])
+            return
+        self.profile_setup.discard(chat_id)
+        self.api.send_message(chat_id, "Основа профиля готова. Дополните её фактами для анкет.")
+        self.show_profile_settings(chat_id)
 
     def show_templates(self, chat_id: int) -> None:
         try:
@@ -596,6 +609,9 @@ class JobTelegramBot:
             return
         del self.pending_edits[chat_id]
         self.api.send_message(chat_id, "Сохранено.")
+        if kind == "profile" and chat_id in self.profile_setup:
+            self._next_profile_setup_field(chat_id)
+            return
         if kind == "template":
             self.show_template(chat_id, field.partition(":")[0])
         elif kind in {"profile", "fact"}:
@@ -888,11 +904,13 @@ class JobTelegramBot:
                 return
             if text == "/cancel":
                 self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
                 self.api.send_message(
                     chat_id, "Редактирование отменено.", reply_markup=MAIN_KEYBOARD
                 )
             elif text.startswith("/start"):
                 self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
                 self.api.send_message(
                     chat_id,
                     "Нажмите «Искать вакансии», чтобы проверить новые подходящие позиции. "
@@ -907,7 +925,11 @@ class JobTelegramBot:
                 self.show_history(chat_id, 0)
             elif text == SETTINGS_BUTTON or text.startswith("/settings"):
                 self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
                 self.show_settings(chat_id)
+            elif text.startswith("/profile"):
+                self.pending_edits.pop(chat_id, None)
+                self.show_profile_settings(chat_id)
             elif (
                 chat_id in self.pending_edits
                 and self.pending_edits[chat_id][0] == "application_url"
@@ -952,11 +974,13 @@ class JobTelegramBot:
                 self.show_history(chat_id, int(action[8:]), message_id=message_id)
             elif action == "menu:main":
                 self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
                 self.api.send_message(
                     chat_id, "Главное меню: выберите действие.", reply_markup=MAIN_KEYBOARD
                 )
             elif action == "settings":
                 self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
                 self.show_settings(chat_id)
             elif action == "settings:search":
                 self.pending_edits.pop(chat_id, None)
@@ -967,6 +991,9 @@ class JobTelegramBot:
             elif action == "settings:profile":
                 self.pending_edits.pop(chat_id, None)
                 self.show_profile_settings(chat_id)
+            elif action == "profile:setup":
+                self.profile_setup.add(chat_id)
+                self._next_profile_setup_field(chat_id)
             elif action == "templates":
                 self.pending_edits.pop(chat_id, None)
                 self.show_templates(chat_id)
