@@ -235,10 +235,8 @@ def _callback_ref(source: str, source_id: str) -> bool:
 
 def vacancy_message(
     vacancy: Vacancy,
-    profile: CandidateProfile | None,
     index: int,
     total: int,
-    templates: tuple[ReplyTemplate, ...] = DEFAULT_TEMPLATES,
 ) -> str:
     title = html.escape(vacancy.title)
     company = html.escape(vacancy.company)
@@ -257,19 +255,6 @@ def vacancy_message(
         f'<a href="{url}">Открыть вакансию ↗</a>\n'
         f"{url}"
     )
-    if profile is not None:
-        template = select_template(vacancy, templates)
-        try:
-            application = html.escape(render_reply(profile, vacancy, template))
-            appendix = (
-                f"\n\n<b>Шаблон: {html.escape(template.name)}</b>\n"
-                f"<b>Готовый текст отклика:</b>\n<pre>{application}</pre>"
-            )
-            if len(message + appendix) > 4000:
-                raise TemplateError("Готовый отклик слишком длинный для карточки вакансии")
-            message += appendix
-        except TemplateError as exc:
-            message += f"\n\nТекст отклика недоступен: {html.escape(str(exc))}."
     return message
 
 
@@ -1108,6 +1093,10 @@ class JobTelegramBot:
                 parts = action.split(":")
                 if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
                     self.show_reply_choices(chat_id, parts[1], parts[2])
+            elif action.startswith("replycurrent:"):
+                parts = action.split(":")
+                if len(parts) == 3 and _callback_ref(parts[1], parts[2]):
+                    self.show_current_reply(chat_id, parts[1], parts[2])
             elif action.startswith("replypick:"):
                 parts = action.split(":")
                 if len(parts) == 4 and _callback_ref(parts[1], parts[2]):
@@ -1353,7 +1342,7 @@ class JobTelegramBot:
 
     def show_reply_choices(self, chat_id: int, source: str, source_id: str) -> None:
         if self._optional_profile(chat_id) is None:
-            self.api.send_message(chat_id, "Заполните данные для отклика в настройках.")
+            self.api.send_message(chat_id, "Заполните данные для отклика в профиле.")
             return
         with VacancyStore(self.config.database_path) as store:
             vacancy = store.get_vacancy(source, source_id)
@@ -1377,6 +1366,15 @@ class JobTelegramBot:
             reply_markup={"inline_keyboard": buttons},
         )
 
+    def show_current_reply(self, chat_id: int, source: str, source_id: str) -> None:
+        with VacancyStore(self.config.database_path) as store:
+            vacancy = store.get_vacancy(source, source_id)
+        if vacancy is None:
+            self.api.send_message(chat_id, "Вакансия не найдена в истории.")
+            return
+        selected = select_template(vacancy, self._optional_templates(chat_id))
+        self.show_reply_with_template(chat_id, source, source_id, selected.key)
+
     def show_reply_with_template(
         self, chat_id: int, source: str, source_id: str, template_key: str
     ) -> None:
@@ -1387,7 +1385,7 @@ class JobTelegramBot:
             return
         profile = self._optional_profile(chat_id)
         if profile is None:
-            self.api.send_message(chat_id, "Заполните данные для отклика в настройках.")
+            self.api.send_message(chat_id, "Заполните данные для отклика в профиле.")
             return
         templates = self._optional_templates(chat_id)
         template = next((item for item in templates if item.key == template_key), None)
@@ -1422,7 +1420,13 @@ class JobTelegramBot:
         buttons = [
             [
                 {
-                    "text": "📝 Другой шаблон",
+                    "text": "📝 Показать отклик",
+                    "callback_data": f"replycurrent:{vacancy.source}:{vacancy.source_id}",
+                }
+            ],
+            [
+                {
+                    "text": "🔁 Другой шаблон",
                     "callback_data": f"reply:{vacancy.source}:{vacancy.source_id}",
                 }
             ]
@@ -1463,7 +1467,6 @@ class JobTelegramBot:
             self._show_card(chat_id, "Это последняя карточка новых вакансий.", message_id=message_id)
             return
         profile = self._optional_profile(chat_id)
-        templates = self._optional_templates(chat_id) if profile is not None else DEFAULT_TEMPLATES
         vacancy = items[page]
         markup = self._reply_button(vacancy, profile) or {"inline_keyboard": []}
         arrows = []
@@ -1477,7 +1480,7 @@ class JobTelegramBot:
             [{"text": "📚 Ранее найденные", "callback_data": "history:0"}]
         )
         self._show_card(
-            chat_id, vacancy_message(vacancy, profile, page + 1, len(items), templates),
+            chat_id, vacancy_message(vacancy, page + 1, len(items)),
             reply_markup=markup, html_mode=True, message_id=message_id,
         )
 
@@ -1504,7 +1507,6 @@ class JobTelegramBot:
             )
             return
         profile = self._optional_profile(chat_id)
-        templates = self._optional_templates(chat_id) if profile is not None else DEFAULT_TEMPLATES
         vacancy = matches[page]
         markup = self._reply_button(vacancy, profile) or {"inline_keyboard": []}
         arrows = []
@@ -1522,7 +1524,7 @@ class JobTelegramBot:
             [{"text": "🔎 Искать новые", "callback_data": "scan"}]
         )
         self._show_card(
-            chat_id, vacancy_message(vacancy, profile, page + 1, total, templates),
+            chat_id, vacancy_message(vacancy, page + 1, total),
             reply_markup=markup, html_mode=True, message_id=message_id,
         )
 
