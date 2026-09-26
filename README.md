@@ -26,7 +26,7 @@ notepad .\config.toml
 
 On Windows, double-click `run-search.cmd` to scan and open the generated HTML report. The script creates a local `config.toml` from the example if it is missing and restores the matching Chromium build when Playwright has been updated.
 
-Edit `search.queries` and `search.sources` in `config.toml` for the roles and feeds you need. The included starter configuration searches HH in Russia plus worldwide remote listings. HH's `area_ids` and `experience_ids` apply only to HH; other sources are matched locally against search phrases. Every international listing shows its stated location scope. Check whether the employer can hire from your country before applying: remote does not mean worldwide.
+Edit `search.sources` and `search.categories` in `config.toml` for the feeds and professions you need. By default, the bot searches **development/testing** and **IT systems, networks, and support** and requires a technical word in the job title. In Telegram, **⚙️ Настройки → Фильтры поиска** lets you edit title phrases, select exact HH professional roles, HH employment forms, work schedules, experience and area, and set a minimum salary and currency. Exact HH roles override broad HH categories. Title phrases apply across sources; a salary threshold hides vacancies without a numeric salary. Freelance project budgets are not compared with monthly salaries. Set `categories = []` to return to the older `search.queries` text mode. HH's `area_ids`, `experience_ids`, `role_ids`, `employment_forms` and `work_schedules` apply only to HH. Every international listing shows its stated location scope. Check whether the employer can hire from your country before applying: remote does not mean worldwide.
 
 HeadHunter asks API clients to identify themselves. Set `hh.user_agent` to `JobSearchAutomation/0.1 (YOUR_EMAIL)` in the ignored local `config.toml`. The address is sent only as an HTTP client contact to HeadHunter and is not stored in Git.
 
@@ -52,6 +52,14 @@ To inspect the most recently stored vacancies:
 
 The scan command discovers vacancies. It does not log in to HeadHunter or submit applications.
 
+Create a private profile skeleton without adding any invented personal details:
+
+```powershell
+.\.venv\Scripts\job-search.exe profile --init
+```
+
+The command reports which facts are still needed for ready-to-copy replies, without printing profile values. In Telegram, open the separate **👤 Профиль** button in the main menu (or send `/profile`). It has sections for basic facts, skills and experience, links and résumé, work preferences, and custom facts. Use **📋 Заполнить основу** to enter your name, factual introduction and contact one at a time; the other fields can be edited individually. The ignored local `profile.json` is never committed; do not put personal data in `profile.example.json`.
+
 To inspect a public employer form without filling or submitting it, run:
 
 ```powershell
@@ -64,11 +72,13 @@ In the bot, open an opportunity card and press **📄 Подготовить з�
 
 ## Telegram bot
 
-The bot runs on your computer and searches when you press **🔎 Искать вакансии**. It sends new vacancies in batches, each with the original link. If nothing new appears, it offers **📚 Ранее найденные**. Search and history work without a candidate profile. If you add one, both new and historical vacancies also include a filled reply text. Sending a supported Tilda application requires a separate explicit confirmation after reviewing its filled form.
+The bot runs on your computer and searches when you press **🔎 Искать вакансии**. It shows one vacancy card at a time; the arrow buttons replace that card in the same Telegram message. Each card keeps the original link. If nothing new appears, it offers **📚 Ранее найденные**, which uses the same navigation. Search and history work without a candidate profile. If you add one, both new and historical vacancies also include a filled reply text. Sending a supported Tilda application requires a separate explicit confirmation after reviewing its filled form.
 
-Use **⚙️ Настройки** (or `/settings`) in the private bot chat to change search phrases, remote-only rules, experience, region, vacancy age, result limit, and excluded words. The same menu lets you edit the name, introduction, contact, skills, résumé link, and portfolio link used in reply text. After choosing a field, send its new value as a message; `/cancel` leaves it unchanged. A dash (`-`) clears optional fields or excluded words. Profile details are optional for searching.
+Use **⚙️ Настройки** (or `/settings`) in the private bot chat to change professional categories, sources, remote-only rules, experience, region, vacancy age, result limit, and excluded words. Text search phrases are available when you switch off the category filter. The same menu lets you edit the name, introduction, contact, skills, résumé link, and portfolio link used in reply text. After choosing a field, send its new value as a message; `/cancel` leaves it unchanged. A dash (`-`) clears optional fields or excluded words. Profile details are optional for searching.
 
 The **Источники** menu enables or disables HH, Remotive, We Work Remotely, Freelancer.com, SuperJob and FL.ru. The **Работа / заказы** menu lets you search vacancies, freelance work, or both. Cross-source matches with the same company and title appear once in new results and history; the underlying source records are retained. International opportunities display their stated candidate location rather than assuming every remote role accepts applicants from everywhere.
+
+Category mode uses HH professional-role IDs, Remotive and We Work Remotely category fields, and Freelancer.com project skill IDs. We Work Remotely occasionally labels nontechnical roles as programming, so its cards also require a technical role title. SuperJob and FL.ru do not yet have a verified category adapter; if enabled in this mode, they report that limitation instead of adding unrelated results. The history view follows current filters; old unrelated cards remain stored but are hidden until the filter changes.
 
 Bot edits to search filters are saved in ignored `data/search-settings.json`. These values override `[search]` in `config.toml` for both bot and CLI scans until that local settings file is removed. Profile edits are saved in ignored `profile.json`. Changes take effect without restarting the bot. Previously discovered vacancies stay in history when filters change. The optional email, phone and city fields can help fill external forms. To prepare a file upload, set `resume_path` in local `profile.json` to a PDF, DOC or DOCX file (for example, `resumes/cv.pdf`); the file stays outside Git.
 

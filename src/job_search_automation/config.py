@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from job_search_automation.categories import CATEGORY_LABELS, DEFAULT_TECH_TITLES, HH_ROLE_LABELS
+
 
 class ConfigError(ValueError):
     """Raised when the local search configuration is invalid."""
@@ -29,6 +31,14 @@ class SearchConfig:
     per_query: int
     sources: tuple[str, ...] = ("hh",)
     kinds: tuple[str, ...] = ("job", "freelance")
+    categories: tuple[str, ...] = ()
+    role_ids: tuple[str, ...] = ()
+    title_keywords: tuple[str, ...] = ()
+    employment_forms: tuple[str, ...] = ()
+    work_schedules: tuple[str, ...] = ()
+    salary_min: int | None = None
+    salary_currency: str = "RUR"
+    salary_required: bool = False
 
 
 @dc(frozen=True, slots=True)
@@ -130,10 +140,36 @@ def save_schedule_settings(schedule: ScheduleConfig, path: Path) -> None:
 
 
 def _validate_search(search: SearchConfig) -> SearchConfig:
+    if not search.categories and not search.queries:
+        raise ConfigError("search needs categories or text queries")
     if not search.sources or set(search.sources) - SOURCE_IDS:
         raise ConfigError("search.sources contains no source or an unknown source")
     if not search.kinds or set(search.kinds) - {"job", "freelance"}:
         raise ConfigError("search.kinds must include job or freelance")
+    if set(search.categories) - CATEGORY_LABELS.keys():
+        raise ConfigError("search.categories contains an unknown category")
+    if set(search.role_ids) - HH_ROLE_LABELS.keys():
+        raise ConfigError("search.role_ids contains an unknown HH role")
+    if set(search.employment_forms) - {"FULL", "PART", "PROJECT", "FLY_IN_FLY_OUT"}:
+        raise ConfigError("search.employment_forms contains an unknown HH employment form")
+    if set(search.work_schedules) - {
+        "FIVE_ON_TWO_OFF", "TWO_ON_TWO_OFF", "FLEXIBLE", "WEEKEND"
+    }:
+        raise ConfigError("search.work_schedules contains an unknown HH work schedule")
+    if set(search.experience_ids) - {
+        "noExperience", "between1And3", "between3And6", "moreThan6"
+    }:
+        raise ConfigError("search.experience_ids contains an unknown HH experience")
+    if search.salary_min is not None and (
+        not isinstance(search.salary_min, int)
+        or isinstance(search.salary_min, bool)
+        or search.salary_min < 0
+    ):
+        raise ConfigError("search.salary_min must be a nonnegative integer")
+    if search.salary_currency not in {"RUR", "USD", "EUR"}:
+        raise ConfigError("search.salary_currency must be RUR, USD or EUR")
+    if not isinstance(search.salary_required, bool):
+        raise ConfigError("search.salary_required must be true or false")
     return search
 
 
@@ -146,9 +182,7 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         raise ConfigError(f"Cannot read saved search settings: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError("Saved search settings must be a JSON object")
-    queries = _strings(raw.get("queries"), "saved search.queries")
-    if not queries:
-        raise ConfigError("Saved search queries must not be empty")
+    queries = _strings(raw.get("queries", list(base.queries)), "saved search.queries")
     remote_only = raw.get("remote_only")
     strict_remote = raw.get("strict_remote")
     if not isinstance(remote_only, bool) or not isinstance(strict_remote, bool):
@@ -164,6 +198,14 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         per_query=_bounded_int(raw.get("per_query"), "saved per_query", 1, 500),
         sources=_strings(raw.get("sources", list(base.sources)), "saved sources"),
         kinds=_strings(raw.get("kinds", list(base.kinds)), "saved kinds"),
+        categories=_strings(raw.get("categories", list(base.categories)), "saved categories"),
+        role_ids=_strings(raw.get("role_ids", list(base.role_ids)), "saved role_ids"),
+        title_keywords=_strings(raw.get("title_keywords", list(base.title_keywords)), "saved title_keywords"),
+        employment_forms=_strings(raw.get("employment_forms", list(base.employment_forms)), "saved employment_forms"),
+        work_schedules=_strings(raw.get("work_schedules", list(base.work_schedules)), "saved work_schedules"),
+        salary_min=raw.get("salary_min", base.salary_min),
+        salary_currency=raw.get("salary_currency", base.salary_currency),
+        salary_required=raw.get("salary_required", base.salary_required),
     ))
 
 
@@ -200,9 +242,7 @@ def load_config(path: str | Path) -> AppConfig:
     ):
         raise ConfigError("search, hh, storage, telegram, and schedule must be TOML tables")
 
-    queries = _strings(search_raw.get("queries"), "search.queries")
-    if not queries:
-        raise ConfigError("search.queries must contain at least one query")
+    queries = _strings(search_raw.get("queries", []), "search.queries")
 
     root = config_path.resolve().parent
     database_path = root / str(storage_raw.get("database", "data/jobs.db"))
@@ -227,6 +267,18 @@ def load_config(path: str | Path) -> AppConfig:
         per_query=_bounded_int(search_raw.get("per_query", 50), "search.per_query", 1, 500),
         sources=_strings(search_raw.get("sources", ["hh"]), "search.sources"),
         kinds=_strings(search_raw.get("kinds", ["job", "freelance"]), "search.kinds"),
+        categories=_strings(
+            search_raw.get("categories", ["software", "it_ops"]), "search.categories"
+        ),
+        role_ids=_strings(search_raw.get("role_ids", []), "search.role_ids"),
+        title_keywords=_strings(
+            search_raw.get("title_keywords", list(DEFAULT_TECH_TITLES)), "search.title_keywords"
+        ),
+        employment_forms=_strings(search_raw.get("employment_forms", []), "search.employment_forms"),
+        work_schedules=_strings(search_raw.get("work_schedules", []), "search.work_schedules"),
+        salary_min=search_raw.get("salary_min"),
+        salary_currency=str(search_raw.get("salary_currency", "RUR")),
+        salary_required=search_raw.get("salary_required", False),
     )
     _validate_search(search)
     schedule = validate_schedule(

@@ -79,3 +79,14 @@ def test_freelancer_reports_api_errors():
     session = Session(Response({"status": "error"}))
     with pytest.raises(SourceError, match="ошибку"):
         FreelancerClient(session).search(settings())
+
+
+def test_freelancer_category_mode_requests_taxonomy_jobs():
+    selected = project(jobs=[{"id": 13, "name": "Python"}])
+    session = Session(Response({"status": "success", "result": {"projects": [selected]}}))
+    focused = SearchConfig((), (), (), (), True, True, 7, 20, categories=("software",))
+    items = FreelancerClient(session).search(focused)
+    assert len(items) == 1
+    assert items[0].categories == ("software",)
+    assert "query" not in session.params[0]
+    assert 13 in session.params[0]["jobs[]"]

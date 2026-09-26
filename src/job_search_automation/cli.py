@@ -17,6 +17,12 @@ from job_search_automation.forms import (
     validate_form_url,
 )
 from job_search_automation.hh import HhApiError
+from job_search_automation.profile import (
+    ProfileError,
+    initialize_profile,
+    missing_reply_fields,
+    read_profile_fields,
+)
 from job_search_automation.reporting import write_report
 from job_search_automation.search import SearchError, scan_vacancies
 from job_search_automation.storage import VacancyStore
@@ -81,6 +87,20 @@ def _list(config_path: Path, limit: int) -> int:
     return 0
 
 
+def _profile(config_path: Path, *, initialize: bool) -> int:
+    path = load_config(config_path).profile_path
+    if initialize:
+        initialize_profile(path)
+    raw = read_profile_fields(path)
+    print(json.dumps({
+        "profile": str(path),
+        "exists": path.is_file(),
+        "missing_for_reply": missing_reply_fields(raw),
+        "filled_fields": sum(bool(value) for key, value in raw.items() if key != "facts"),
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _probe(url: str, form_index: int | None) -> int:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -105,6 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = commands.add_parser("list", help="Show recently discovered vacancies")
     list_parser.add_argument("--limit", type=int, default=20)
     commands.add_parser("bot", help="Run the private Telegram bot until Ctrl+C")
+    profile_parser = commands.add_parser("profile", help="Show local profile readiness")
+    profile_parser.add_argument("--init", action="store_true", help="Create an empty ignored profile")
     probe_parser = commands.add_parser(
         "form-probe", help="Inspect a live application form without filling"
     )
@@ -128,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "bot":
             run_bot(load_config(args.config))
             return 0
+        if args.command == "profile":
+            return _profile(args.config, initialize=args.init)
         if args.command == "form-probe":
             return _probe(args.url, args.form_index)
     except KeyboardInterrupt:
@@ -140,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except (ConfigError, FormProbeError, HhApiError, SearchError, TelegramApiError, OSError) as exc:
+    except (ConfigError, FormProbeError, HhApiError, SearchError, TelegramApiError, ProfileError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2

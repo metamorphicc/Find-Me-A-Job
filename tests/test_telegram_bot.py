@@ -15,7 +15,7 @@ from job_search_automation.models import Vacancy
 from job_search_automation.reply_templates import load_templates, templates_path
 from job_search_automation.search import ScanResult
 from job_search_automation.storage import VacancyStore
-from job_search_automation.telegram_bot import MAIN_KEYBOARD, JobTelegramBot
+from job_search_automation.telegram_bot import MAIN_KEYBOARD, PROFILE_BUTTON, JobTelegramBot
 
 
 def vacancy(source_id: str = "123") -> Vacancy:
@@ -64,9 +64,17 @@ class FakeApi:
         self.messages = []
         self.callbacks = []
         self.photos = []
+        self.edits = []
 
-    def send_message(self, chat_id, text, *, reply_markup=None, html_mode=False) -> None:
+    def send_message(self, chat_id, text, *, reply_markup=None, html_mode=False) -> int:
         self.messages.append((chat_id, text, reply_markup, html_mode))
+        return len(self.messages)
+
+    def edit_message(
+        self, chat_id, message_id, text, *, reply_markup=None, html_mode=False
+    ) -> None:
+        self.edits.append((chat_id, message_id, text))
+        self.messages[message_id - 1] = (chat_id, text, reply_markup, html_mode)
 
     def answer_callback(self, callback_id, text="") -> None:
         self.callbacks.append((callback_id, text))
@@ -132,7 +140,10 @@ def test_bot_searches_without_profile_and_sends_vacancy_link(tmp_path) -> None:
     card = next(text for _, text, _, mode in api.messages if mode)
     assert "https://hh.ru/vacancy/123" in card
     assert "Готовый текст отклика" not in card
-    assert next(markup for _, _, markup, mode in api.messages if mode) is None
+    assert len(api.messages) == 1
+    assert next(markup for _, _, markup, mode in api.messages if mode)["inline_keyboard"][0][0][
+        "callback_data"
+    ] == "history:0"
 
     bot.handle_update(message("/history"))
     historical_card = [text for _, text, _, mode in api.messages if mode][-1]
@@ -209,12 +220,69 @@ def test_old_vacancies_are_paginated_from_local_database(tmp_path) -> None:
     bot = JobTelegramBot(settings, api)
 
     bot.handle_update(message("/history"))
-    assert api.messages[-1][2]["inline_keyboard"][0][0]["callback_data"] == "history:1"
+    assert any(
+        button["callback_data"] == "history:1"
+        for row in api.messages[-1][2]["inline_keyboard"] for button in row
+    )
 
     bot.handle_update(callback("history:1"))
     cards = [text for _, text, _, mode in api.messages if mode]
     assert len(cards) == 2
     assert "https://hh.ru/vacancy/" in cards[1]
+
+
+def test_new_cards_use_one_message_and_arrows_edit_it(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    first = vacancy("1")
+    second = replace(vacancy("2"), title="Backend developer")
+    bot = JobTelegramBot(settings, api)
+    bot.scan(42, result=ScanResult([first, second], 2, 2, "test"))
+
+    assert len(api.messages) == 1
+    assert "Junior Python" in api.messages[0][1]
+    update = callback("new:1")
+    update["callback_query"]["message"]["message_id"] = 1
+    bot.handle_update(update)
+
+    assert len(api.messages) == 1
+    assert api.edits[0][1] == 1
+    assert "Backend developer" in api.messages[0][1]
+    buttons = api.messages[0][2]["inline_keyboard"]
+    assert any(button["callback_data"] == "new:0" for row in buttons for button in row)
+
+
+def test_history_arrows_edit_same_card(tmp_path) -> None:
+    settings = config(tmp_path)
+    with VacancyStore(settings.database_path) as store:
+        store.save([vacancy("1"), replace(vacancy("2"), title="Backend developer")])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+    bot.show_history(42, 0)
+    update = callback("history:1")
+    update["callback_query"]["message"]["message_id"] = 1
+    bot.handle_update(update)
+
+    assert len(api.messages) == 1
+    assert len(api.edits) == 1
+    assert "Junior Python" in api.messages[0][1]
+
+
+def test_history_respects_current_professional_categories(tmp_path) -> None:
+    settings = config(tmp_path)
+    with VacancyStore(settings.database_path) as store:
+        store.save([
+            replace(vacancy("1"), title="Бармен", categories=()),
+            replace(vacancy("2"), title="Backend developer", categories=("software",)),
+        ])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+    bot._save_search_settings(categories=("software",))
+    bot.show_history(42, 0)
+
+    assert "Backend developer" in api.messages[-1][1]
+    assert "Бармен" not in api.messages[-1][1]
+    assert "1/1" in api.messages[-1][1]
 
 
 def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:
@@ -244,6 +312,30 @@ def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:
     assert used_searches[0].experience_ids == ("noExperience",)
     saved = load_search_settings(settings.search, search_settings_path(settings.database_path))
     assert saved == used_searches[0]
+
+
+def test_bot_edits_precise_search_filters(tmp_path) -> None:
+    settings = config(tmp_path)
+    bot = JobTelegramBot(settings, FakeApi())
+
+    bot.handle_update(callback("toggle:role:96"))
+    bot.handle_update(callback("toggle:employment:FULL"))
+    bot.handle_update(callback("toggle:work_schedule:FIVE_ON_TWO_OFF"))
+    bot.handle_update(callback("toggle:experience:between3And6"))
+    bot.handle_update(callback("edit:search:title_keywords"))
+    bot.handle_update(message("developer, разработчик"))
+    bot.handle_update(callback("edit:search:salary_min"))
+    bot.handle_update(message("100000"))
+    bot.handle_update(callback("toggle:salary_required"))
+
+    saved = bot._search_settings()
+    assert saved.role_ids == ("96",)
+    assert saved.employment_forms == ("FULL",)
+    assert saved.work_schedules == ("FIVE_ON_TWO_OFF",)
+    assert saved.experience_ids == ("between3And6",)
+    assert saved.title_keywords == ("developer", "разработчик")
+    assert saved.salary_min == 100000
+    assert saved.salary_required is True
 
 
 def test_settings_back_returns_to_main_menu(tmp_path) -> None:
@@ -353,6 +445,66 @@ def test_bot_edits_candidate_profile_and_fills_history_reply(tmp_path) -> None:
     assert json.loads(settings.profile_path.read_text(encoding="utf-8"))["name"] == "Иван"
 
 
+def test_profile_setup_guides_required_fields_without_inventing_optional_facts(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(message("/profile"))
+    assert settings.profile_path.is_file()
+    assert "Заполнить основу" in str(api.messages[-1][2])
+    bot.handle_update(callback("profile:setup"))
+    assert bot.pending_edits[42] == ("profile", "name")
+    bot.handle_update(message("Иван"))
+    assert bot.pending_edits[42] == ("profile", "about")
+    bot.handle_update(message("Пишу на Python"))
+    assert bot.pending_edits[42] == ("profile", "contact")
+    bot.handle_update(message("@candidate"))
+
+    raw = json.loads(settings.profile_path.read_text(encoding="utf-8"))
+    assert raw["name"] == "Иван"
+    assert raw["email"] == ""
+    assert 42 not in bot.profile_setup
+    assert "Готовый текст отклика включён" in api.messages[-1][1]
+
+
+def test_profile_is_a_separate_main_menu_section(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    assert PROFILE_BUTTON in str(MAIN_KEYBOARD)
+    bot.handle_update(message(PROFILE_BUTTON))
+    assert "Ваш профиль" in api.messages[-1][1]
+    assert "profile:section:basic" in str(api.messages[-1][2])
+    bot.handle_update(callback("profile:section:basic"))
+    assert "Основное" in api.messages[-1][1]
+    assert "edit:profile:name" in str(api.messages[-1][2])
+    bot.handle_update(callback("edit:profile:name"))
+    bot.handle_update(message("Иван"))
+    assert "Имя: Иван" in api.messages[-1][1]
+    assert "profile:home" in str(api.messages[-1][2])
+    bot.handle_update(callback("profile:home"))
+    assert "Ваш профиль" in api.messages[-1][1]
+
+
+def test_leaving_profile_setup_keeps_manual_section_edits_independent(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(message(PROFILE_BUTTON))
+    bot.handle_update(callback("profile:setup"))
+    assert bot.pending_edits[42] == ("profile", "name")
+    bot.handle_update(callback("profile:section:skills"))
+    assert 42 not in bot.profile_setup
+    assert 42 not in bot.pending_edits
+    bot.handle_update(callback("edit:profile:skills"))
+    bot.handle_update(message("Python, SQL"))
+    assert "Опыт и навыки" in api.messages[-1][1]
+    assert "Навыки: Python, SQL" in api.messages[-1][1]
+
+
 def test_invalid_filter_edit_keeps_previous_settings(tmp_path) -> None:
     settings = config(tmp_path)
     api = FakeApi()
@@ -409,6 +561,21 @@ def test_bot_can_enable_sources_and_choose_only_freelance(tmp_path) -> None:
     saved = bot._search_settings()
     assert saved.sources == ("hh", "remotive")
     assert saved.kinds == ("freelance",)
+
+
+def test_bot_switches_professional_categories(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(callback("choose:categories"))
+    assert "Разработка и тестирование" in str(api.messages[-1][2])
+    bot.handle_update(callback("toggle:category:software"))
+    assert bot._search_settings().categories == ("software",)
+    bot.handle_update(callback("toggle:category:it_ops"))
+    assert bot._search_settings().categories == ("software", "it_ops")
+    bot.handle_update(callback("set:categories:any"))
+    assert bot._search_settings().categories == ()
 
 
 def test_non_hh_opportunity_has_reply_button(tmp_path) -> None:

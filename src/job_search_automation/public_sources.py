@@ -11,6 +11,11 @@ from urllib.parse import urlparse
 
 import requests
 
+from job_search_automation.categories import (
+    REMOTIVE_CATEGORIES,
+    WWR_CATEGORIES,
+    technical_role_title,
+)
 from job_search_automation.config import SearchConfig
 from job_search_automation.models import Vacancy
 
@@ -73,10 +78,20 @@ class RemotiveClient:
                 continue
             title = _plain(str(item.get("title") or ""))
             summary = _plain(str(item.get("description") or ""))
-            query = _query(title, summary, settings.queries)
+            category = REMOTIVE_CATEGORIES.get(str(item.get("category") or ""))
+            if settings.categories:
+                if category not in settings.categories:
+                    continue
+                query = ""
+            else:
+                query = _query(title, summary, settings.queries)
+            if settings.title_keywords and not any(
+                word.casefold() in title.casefold() for word in settings.title_keywords
+            ):
+                continue
             published = str(item.get("publication_date") or "")
             url = str(item.get("url") or "")
-            if not query or not _recent(published, settings.days) or not url.startswith("https://remotive.com/"):
+            if query is None or not _recent(published, settings.days) or not url.startswith("https://remotive.com/"):
                 continue
             job_type = str(item.get("job_type") or "").casefold()
             result.append(
@@ -101,9 +116,11 @@ class RemotiveClient:
                     market="global",
                     location_scope=str(item.get("candidate_required_location") or "Не указана"),
                     pay_label=str(item.get("salary") or "Не указана"),
+                    categories=(category,) if category else (),
                 )
             )
-            if len(result) >= settings.per_query * len(settings.queries):
+            limit = settings.per_query if settings.categories else settings.per_query * len(settings.queries)
+            if len(result) >= limit:
                 break
         return result
 
@@ -120,6 +137,8 @@ class RssClient:
         self.session = session or requests.Session()
 
     def search(self, settings: SearchConfig) -> list[Vacancy]:
+        if self.source == "fl" and settings.categories:
+            raise SourceError("FL.ru RSS не содержит проверяемых профессиональных категорий")
         try:
             response = self.session.get(self.url, timeout=25)
             response.raise_for_status()
@@ -133,13 +152,23 @@ class RssClient:
         for item in items:
             title = _plain(_item_text(item, "title"))
             summary = _plain(_item_text(item, "description"))
-            query = _query(title, summary, settings.queries)
+            category = WWR_CATEGORIES.get(_item_text(item, "category")) if self.source == "wwr" else None
+            if settings.categories:
+                if category not in settings.categories or not technical_role_title(title):
+                    continue
+                query = ""
+            else:
+                query = _query(title, summary, settings.queries)
+            if settings.title_keywords and not any(
+                word.casefold() in title.casefold() for word in settings.title_keywords
+            ):
+                continue
             published = _item_text(item, "pubDate")
             url = _item_text(item, "link")
             host = urlparse(url).hostname or ""
             expected = "weworkremotely.com" if self.source == "wwr" else "fl.ru"
             if (
-                not query
+                query is None
                 or not _recent(published, settings.days, rss=True)
                 or urlparse(url).scheme != "https"
                 or (host != expected and not host.endswith("." + expected))
@@ -178,9 +207,11 @@ class RssClient:
                     kind=kind,
                     market=self.market,
                     location_scope=location,
+                    categories=(category,) if category else (),
                 )
             )
-            if len(result) >= settings.per_query * len(settings.queries):
+            limit = settings.per_query if settings.categories else settings.per_query * len(settings.queries)
+            if len(result) >= limit:
                 break
         return result
 

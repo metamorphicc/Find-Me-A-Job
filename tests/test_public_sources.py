@@ -91,3 +91,41 @@ def test_unavailable_rss_is_reported_not_parsed():
     source = RssClient("fl", "https://example.test/feed", "ru", session=Session(Response(status=403)))
     with pytest.raises(SourceError, match="недоступен"):
         source.search(settings())
+
+
+def test_remotive_category_mode_ignores_text_and_rejects_teaching():
+    now = datetime.now(UTC).isoformat()
+    session = Session(Response(data={"jobs": [
+        {
+            "id": 1, "url": "https://remotive.com/remote-jobs/dev/1", "title": "Бармен",
+            "category": "Teaching", "publication_date": now,
+        },
+        {
+            "id": 2, "url": "https://remotive.com/remote-jobs/dev/2", "title": "Backend role",
+            "category": "Software Development", "publication_date": now,
+        },
+    ]}))
+    focused = SearchConfig((), (), (), (), True, True, 7, 20, categories=("software",))
+    items = RemotiveClient(session).search(focused)
+    assert [item.title for item in items] == ["Backend role"]
+    assert items[0].categories == ("software",)
+
+
+def test_wwr_category_mode_keeps_only_programming_or_it():
+    published = format_datetime(datetime.now(UTC))
+    feed = f"""<rss><channel>
+    <item><title>Example: Art teacher</title><link>https://weworkremotely.com/remote-jobs/1</link>
+      <description>Teacher</description><pubDate>{published}</pubDate>
+      <category>Full-Stack Programming</category></item>
+    <item><title>Example: Sales Development Representative</title>
+      <link>https://weworkremotely.com/remote-jobs/3</link>
+      <description>Sales</description><pubDate>{published}</pubDate>
+      <category>DevOps and Sysadmin</category></item>
+    <item><title>Example: Backend engineer</title><link>https://weworkremotely.com/remote-jobs/2</link>
+      <description>Code</description><pubDate>{published}</pubDate>
+      <category>Back-End Programming</category></item>
+    </channel></rss>""".encode()
+    focused = SearchConfig((), (), (), (), True, True, 7, 20, categories=("software",))
+    items = RssClient("wwr", "https://example.test/feed", "global", session=Session(Response(content=feed))).search(focused)
+    assert [item.title for item in items] == ["Backend engineer"]
+    assert items[0].categories == ("software",)
