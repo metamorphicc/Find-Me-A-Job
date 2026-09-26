@@ -58,7 +58,7 @@ Create a private profile skeleton without adding any invented personal details:
 .\.venv\Scripts\job-search.exe profile --init
 ```
 
-The command reports which facts are still needed for ready-to-copy replies, without printing profile values. In Telegram, use `/profile` and **📋 Заполнить основу** to enter your name, factual introduction and contact one at a time. Email, phone, city, experience, education, portfolio, résumé path and custom facts can be added separately. The ignored local `profile.json` is never committed; do not put personal data in `profile.example.json`.
+The command reports which facts are still needed for ready-to-copy replies, without printing profile values. In Telegram, open the separate **👤 Профиль** button in the main menu (or send `/profile`). It has sections for basic facts, skills and experience, links and résumé, work preferences, and custom facts. Use **📋 Заполнить основу** to enter your name, factual introduction and contact one at a time; the other fields can be edited individually. The ignored local `profile.json` is never committed; do not put personal data in `profile.example.json`.
 
 To inspect a public employer form without filling or submitting it, run:
 

@@ -15,7 +15,7 @@ from job_search_automation.models import Vacancy
 from job_search_automation.reply_templates import load_templates, templates_path
 from job_search_automation.search import ScanResult
 from job_search_automation.storage import VacancyStore
-from job_search_automation.telegram_bot import MAIN_KEYBOARD, JobTelegramBot
+from job_search_automation.telegram_bot import MAIN_KEYBOARD, PROFILE_BUTTON, JobTelegramBot
 
 
 def vacancy(source_id: str = "123") -> Vacancy:
@@ -466,6 +466,43 @@ def test_profile_setup_guides_required_fields_without_inventing_optional_facts(t
     assert raw["email"] == ""
     assert 42 not in bot.profile_setup
     assert "Готовый текст отклика включён" in api.messages[-1][1]
+
+
+def test_profile_is_a_separate_main_menu_section(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    assert PROFILE_BUTTON in str(MAIN_KEYBOARD)
+    bot.handle_update(message(PROFILE_BUTTON))
+    assert "Ваш профиль" in api.messages[-1][1]
+    assert "profile:section:basic" in str(api.messages[-1][2])
+    bot.handle_update(callback("profile:section:basic"))
+    assert "Основное" in api.messages[-1][1]
+    assert "edit:profile:name" in str(api.messages[-1][2])
+    bot.handle_update(callback("edit:profile:name"))
+    bot.handle_update(message("Иван"))
+    assert "Имя: Иван" in api.messages[-1][1]
+    assert "profile:home" in str(api.messages[-1][2])
+    bot.handle_update(callback("profile:home"))
+    assert "Ваш профиль" in api.messages[-1][1]
+
+
+def test_leaving_profile_setup_keeps_manual_section_edits_independent(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.handle_update(message(PROFILE_BUTTON))
+    bot.handle_update(callback("profile:setup"))
+    assert bot.pending_edits[42] == ("profile", "name")
+    bot.handle_update(callback("profile:section:skills"))
+    assert 42 not in bot.profile_setup
+    assert 42 not in bot.pending_edits
+    bot.handle_update(callback("edit:profile:skills"))
+    bot.handle_update(message("Python, SQL"))
+    assert "Опыт и навыки" in api.messages[-1][1]
+    assert "Навыки: Python, SQL" in api.messages[-1][1]
 
 
 def test_invalid_filter_edit_keeps_previous_settings(tmp_path) -> None:
