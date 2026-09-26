@@ -324,6 +324,10 @@ def test_bot_edits_precise_search_filters(tmp_path) -> None:
     bot.handle_update(callback("toggle:experience:between3And6"))
     bot.handle_update(callback("edit:search:title_keywords"))
     bot.handle_update(message("developer, разработчик"))
+    bot.handle_update(callback("edit:search:stack_keywords"))
+    bot.handle_update(message("TypeScript, React"))
+    bot.handle_update(callback("edit:search:excluded_title_keywords"))
+    bot.handle_update(message("QA, DevOps"))
     bot.handle_update(callback("edit:search:salary_min"))
     bot.handle_update(message("100000"))
     bot.handle_update(callback("toggle:salary_required"))
@@ -334,6 +338,8 @@ def test_bot_edits_precise_search_filters(tmp_path) -> None:
     assert saved.work_schedules == ("FIVE_ON_TWO_OFF",)
     assert saved.experience_ids == ("between3And6",)
     assert saved.title_keywords == ("developer", "разработчик")
+    assert saved.stack_keywords == ("TypeScript", "React")
+    assert saved.excluded_title_keywords == ("QA", "DevOps")
     assert saved.salary_min == 100000
     assert saved.salary_required is True
 
@@ -578,7 +584,7 @@ def test_bot_switches_professional_categories(tmp_path) -> None:
     bot = JobTelegramBot(settings, api)
 
     bot.handle_update(callback("choose:categories"))
-    assert "Разработка и тестирование" in str(api.messages[-1][2])
+    assert "Разработка ПО" in str(api.messages[-1][2])
     bot.handle_update(callback("toggle:category:software"))
     assert bot._search_settings().categories == ("software",)
     bot.handle_update(callback("toggle:category:it_ops"))

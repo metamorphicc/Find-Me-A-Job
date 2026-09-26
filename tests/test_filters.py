@@ -1,3 +1,10 @@
+from dataclasses import replace
+
+from job_search_automation.categories import (
+    DEFAULT_EXCLUDED_TITLES,
+    DEFAULT_STACK_SIGNALS,
+    DEFAULT_TECH_TITLES,
+)
 from job_search_automation.config import SearchConfig
 from job_search_automation.filters import rejection_reason
 from job_search_automation.models import Vacancy
@@ -97,3 +104,45 @@ def test_explicit_hh_role_overrides_broad_category():
     assert rejection_reason(replace(administrator, professional_role_ids=("96",)), focused) == (
         "outside selected HH roles"
     )
+
+
+def test_stack_and_title_exclusions_keep_development_results_focused():
+    focused = replace(
+        settings(),
+        categories=("software",),
+        title_keywords=("backend", "react"),
+        stack_keywords=("react", "typescript", "node.js"),
+        excluded_title_keywords=("qa", "devops"),
+    )
+    base = replace(vacancy("REMOTE"), title="Backend developer", categories=("software",))
+    assert rejection_reason(replace(base, summary="Java and Spring"), focused) == (
+        "title and description do not mention the selected stack"
+    )
+    assert rejection_reason(replace(base, summary="TypeScript and Node.js"), focused) is None
+    assert rejection_reason(replace(base, title="QA React engineer"), focused) == (
+        "title contains an excluded role"
+    )
+    assert rejection_reason(replace(base, title="DevOps React engineer"), focused) == (
+        "title contains an excluded role"
+    )
+
+
+def test_default_focus_requires_a_real_stack_signal_not_just_fullstack_title():
+    focused = replace(
+        settings(),
+        categories=("software",),
+        title_keywords=DEFAULT_TECH_TITLES,
+        stack_keywords=DEFAULT_STACK_SIGNALS,
+        excluded_title_keywords=DEFAULT_EXCLUDED_TITLES,
+    )
+    base = replace(vacancy("REMOTE"), categories=("software",))
+    assert rejection_reason(replace(base, title="Senior Fullstack PHP Developer"), focused) == (
+        "title and description do not mention the selected stack"
+    )
+    assert rejection_reason(replace(base, title="Автор резюме Go / Java / Python"), focused) == (
+        "title does not contain a required phrase"
+    )
+    assert rejection_reason(replace(base, title="Senior Mobile Engineer (React Native)"), focused) == (
+        "title contains an excluded role"
+    )
+    assert rejection_reason(replace(base, title="Backend TypeScript Developer"), focused) is None

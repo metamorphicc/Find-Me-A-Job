@@ -321,6 +321,8 @@ class JobTelegramBot:
             f"Профессии: {', '.join(CATEGORY_LABELS[name] for name in settings.categories) or 'любые'}\n"
             f"Роли HH: {', '.join(HH_ROLE_LABELS[name] for name in settings.role_ids) or 'все в категориях'}\n"
             f"Слова в названии: {', '.join(settings.title_keywords) or 'не заданы'}\n"
+            f"Стек в названии или описании: {', '.join(settings.stack_keywords) or 'любой'}\n"
+            f"Исключить названия: {', '.join(settings.excluded_title_keywords) or 'нет'}\n"
             f"Запросы: {', '.join(settings.queries) or 'нет'}"
             f"{' (сейчас не используются)' if settings.categories else ''}\n"
             f"Источники: {', '.join(settings.sources)}\n"
@@ -341,6 +343,8 @@ class JobTelegramBot:
                     [{"text": "Профессиональные категории", "callback_data": "choose:categories"}],
                     [{"text": "Точные роли HH", "callback_data": "choose:roles"}],
                     [{"text": "Слова в названии", "callback_data": "edit:search:title_keywords"}],
+                    [{"text": "Технологии в вакансии", "callback_data": "edit:search:stack_keywords"}],
+                    [{"text": "Исключить названия", "callback_data": "edit:search:excluded_title_keywords"}],
                     [{"text": "Запросы (текстовый режим)", "callback_data": "edit:search:queries"}],
                     [
                         {"text": "Источники", "callback_data": "choose:sources"},
@@ -582,13 +586,16 @@ class JobTelegramBot:
                 else ""
             )
         elif kind == "search" and field in {
-            "queries", "excluded_keywords", "area_ids", "title_keywords", "salary_min"
+            "queries", "excluded_keywords", "area_ids", "title_keywords",
+            "stack_keywords", "excluded_title_keywords", "salary_min"
         }:
             label = {
                 "queries": "Поисковые запросы",
                 "excluded_keywords": "Исключаемые слова",
                 "area_ids": "ID регионов HeadHunter",
                 "title_keywords": "Обязательные слова или фразы в названии (достаточно одного)",
+                "stack_keywords": "Технологии в названии или описании (достаточно одной)",
+                "excluded_title_keywords": "Слова в названии неподходящих ролей",
                 "salary_min": "Минимальная зарплата числом в выбранной валюте",
             }[field]
             extra = "" if field == "salary_min" else " Перечислите через запятую или с новой строки."
@@ -639,7 +646,7 @@ class JobTelegramBot:
                     items = ()
                 if field == "queries" and not items:
                     raise ConfigError("Укажите хотя бы один поисковый запрос")
-                if len(items) > (10 if field in {"queries", "title_keywords"} else 30) or any(
+                if len(items) > (20 if field in {"queries", "title_keywords", "stack_keywords"} else 30) or any(
                     len(item) > 80 for item in items
                 ):
                     raise ConfigError("Слишком много значений или слишком длинный текст")

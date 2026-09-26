@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from job_search_automation.categories import CATEGORY_LABELS, DEFAULT_TECH_TITLES, HH_ROLE_LABELS
+from job_search_automation.categories import (
+    CATEGORY_LABELS,
+    DEFAULT_EXCLUDED_TITLES,
+    DEFAULT_STACK_SIGNALS,
+    DEFAULT_TECH_TITLES,
+    HH_ROLE_LABELS,
+)
 
 
 class ConfigError(ValueError):
@@ -34,6 +40,8 @@ class SearchConfig:
     categories: tuple[str, ...] = ()
     role_ids: tuple[str, ...] = ()
     title_keywords: tuple[str, ...] = ()
+    stack_keywords: tuple[str, ...] = ()
+    excluded_title_keywords: tuple[str, ...] = ()
     employment_forms: tuple[str, ...] = ()
     work_schedules: tuple[str, ...] = ()
     salary_min: int | None = None
@@ -201,6 +209,11 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         categories=_strings(raw.get("categories", list(base.categories)), "saved categories"),
         role_ids=_strings(raw.get("role_ids", list(base.role_ids)), "saved role_ids"),
         title_keywords=_strings(raw.get("title_keywords", list(base.title_keywords)), "saved title_keywords"),
+        stack_keywords=_strings(raw.get("stack_keywords", list(base.stack_keywords)), "saved stack_keywords"),
+        excluded_title_keywords=_strings(
+            raw.get("excluded_title_keywords", list(base.excluded_title_keywords)),
+            "saved excluded_title_keywords",
+        ),
         employment_forms=_strings(raw.get("employment_forms", list(base.employment_forms)), "saved employment_forms"),
         work_schedules=_strings(raw.get("work_schedules", list(base.work_schedules)), "saved work_schedules"),
         salary_min=raw.get("salary_min", base.salary_min),
@@ -268,11 +281,18 @@ def load_config(path: str | Path) -> AppConfig:
         sources=_strings(search_raw.get("sources", ["hh"]), "search.sources"),
         kinds=_strings(search_raw.get("kinds", ["job", "freelance"]), "search.kinds"),
         categories=_strings(
-            search_raw.get("categories", ["software", "it_ops"]), "search.categories"
+            search_raw.get("categories", ["software"]), "search.categories"
         ),
         role_ids=_strings(search_raw.get("role_ids", []), "search.role_ids"),
         title_keywords=_strings(
             search_raw.get("title_keywords", list(DEFAULT_TECH_TITLES)), "search.title_keywords"
+        ),
+        stack_keywords=_strings(
+            search_raw.get("stack_keywords", list(DEFAULT_STACK_SIGNALS)), "search.stack_keywords"
+        ),
+        excluded_title_keywords=_strings(
+            search_raw.get("excluded_title_keywords", list(DEFAULT_EXCLUDED_TITLES)),
+            "search.excluded_title_keywords",
         ),
         employment_forms=_strings(search_raw.get("employment_forms", []), "search.employment_forms"),
         work_schedules=_strings(search_raw.get("work_schedules", []), "search.work_schedules"),

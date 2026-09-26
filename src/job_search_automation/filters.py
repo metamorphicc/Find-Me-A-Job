@@ -19,10 +19,20 @@ def rejection_reason(vacancy: Vacancy, config: SearchConfig) -> str | None:
         and not set(vacancy.professional_role_ids).intersection(config.role_ids)
     ):
         return "outside selected HH roles"
+    if config.excluded_title_keywords and any(
+        keyword.casefold() in vacancy.title.casefold()
+        for keyword in config.excluded_title_keywords
+    ):
+        return "title contains an excluded role"
     if config.title_keywords and not any(
         keyword.casefold() in vacancy.title.casefold() for keyword in config.title_keywords
     ):
         return "title does not contain a required phrase"
+    stack_text = f"{vacancy.title} {vacancy.summary}".casefold()
+    if config.stack_keywords and not any(
+        keyword.casefold() in stack_text for keyword in config.stack_keywords
+    ):
+        return "title and description do not mention the selected stack"
     if config.remote_only and not vacancy.is_remote():
         return "not remote"
     if config.strict_remote and vacancy.has_non_remote_format():
