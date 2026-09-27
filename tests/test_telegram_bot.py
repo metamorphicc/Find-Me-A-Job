@@ -179,7 +179,7 @@ def test_unauthorized_user_cannot_search_or_read_history(tmp_path) -> None:
     assert all("Доступ закрыт" in item[1] for item in api.messages)
 
 
-def test_new_and_historical_vacancies_have_link_and_filled_reply(tmp_path) -> None:
+def test_new_and_historical_vacancies_keep_links_without_inline_reply(tmp_path) -> None:
     settings = config(tmp_path)
     write_profile(settings.profile_path)
     api = FakeApi()
@@ -195,8 +195,8 @@ def test_new_and_historical_vacancies_have_link_and_filled_reply(tmp_path) -> No
     card = next(text for _, text, _, mode in api.messages if mode)
 
     assert "https://hh.ru/vacancy/123" in card
-    assert "Иван" in card
-    assert "@candidate" in card
+    assert "Иван" not in card
+    assert "@candidate" not in card
     assert "Junior Python &lt;Developer&gt;" in card
     assert "Example &amp; Co" in card
 
@@ -207,7 +207,7 @@ def test_new_and_historical_vacancies_have_link_and_filled_reply(tmp_path) -> No
     bot.handle_update(callback("history:0"))
     historical_card = [text for _, text, _, mode in api.messages if mode][-1]
     assert "https://hh.ru/vacancy/123" in historical_card
-    assert "Иван" in historical_card
+    assert "Иван" not in historical_card
     assert api.callbacks == [("callback-1", "")]
 
 
@@ -324,6 +324,10 @@ def test_bot_edits_precise_search_filters(tmp_path) -> None:
     bot.handle_update(callback("toggle:experience:between3And6"))
     bot.handle_update(callback("edit:search:title_keywords"))
     bot.handle_update(message("developer, разработчик"))
+    bot.handle_update(callback("edit:search:stack_keywords"))
+    bot.handle_update(message("TypeScript, React"))
+    bot.handle_update(callback("edit:search:excluded_title_keywords"))
+    bot.handle_update(message("QA, DevOps"))
     bot.handle_update(callback("edit:search:salary_min"))
     bot.handle_update(message("100000"))
     bot.handle_update(callback("toggle:salary_required"))
@@ -334,6 +338,8 @@ def test_bot_edits_precise_search_filters(tmp_path) -> None:
     assert saved.work_schedules == ("FIVE_ON_TWO_OFF",)
     assert saved.experience_ids == ("between3And6",)
     assert saved.title_keywords == ("developer", "разработчик")
+    assert saved.stack_keywords == ("TypeScript", "React")
+    assert saved.excluded_title_keywords == ("QA", "DevOps")
     assert saved.salary_min == 100000
     assert saved.salary_required is True
 
@@ -383,17 +389,23 @@ def test_bot_edits_role_template_and_uses_it_for_new_and_old_vacancies(tmp_path)
 
     bot.handle_update(message("/scan"))
     card = next(text for _, text, _, mode in api.messages if mode)
-    assert "Шаблон: Python" in card
-    assert "Здравствуйте, я Иван" in card
+    assert "Здравствуйте, я Иван" not in card
     assert "https://hh.ru/vacancy/123" in card
+    card_markup = next(markup for _, _, markup, mode in api.messages if mode)
+    assert card_markup["inline_keyboard"][0][0]["callback_data"] == "replycurrent:hh:123"
+    bot.handle_update(callback("replycurrent:hh:123"))
+    current_reply = api.messages[-1][1]
+    assert "шаблон «Python»" in current_reply
+    assert "Здравствуйте, я Иван" in current_reply
 
     bot.handle_update(message("/history"))
     historical_card = [text for _, text, _, mode in api.messages if mode][-1]
-    assert "Шаблон: Python" in historical_card
-    assert "Здравствуйте, я Иван" in historical_card
+    assert "Здравствуйте, я Иван" not in historical_card
 
     card_markup = [markup for _, _, markup, mode in api.messages if mode][-1]
-    assert card_markup["inline_keyboard"][0][0]["callback_data"] == "reply:hh:123"
+    assert card_markup["inline_keyboard"][0][0]["callback_data"] == "replycurrent:hh:123"
+    bot.handle_update(callback("replycurrent:hh:123"))
+    assert "Здравствуйте, я Иван" in api.messages[-1][1]
     bot.handle_update(callback("reply:hh:123"))
     choices = api.messages[-1][2]["inline_keyboard"]
     assert any(button[0]["callback_data"] == "replypick:hh:123:general" for button in choices)
@@ -437,11 +449,14 @@ def test_bot_edits_candidate_profile_and_fills_history_reply(tmp_path) -> None:
     bot.handle_update(message("/history"))
 
     card = [text for _, text, _, mode in api.messages if mode][-1]
-    assert "Готовый текст отклика" in card
-    assert "Иван" in card
-    assert "@candidate" in card
-    assert "Python, SQL" in card
-    assert "https://example.test/resume" in card
+    assert "Готовый текст отклика" not in card
+    assert "@candidate" not in card
+    bot.handle_update(callback("replycurrent:hh:123"))
+    reply = api.messages[-1][1]
+    assert "Иван" in reply
+    assert "@candidate" in reply
+    assert "Python, SQL" in reply
+    assert "https://example.test/resume" in reply
     assert json.loads(settings.profile_path.read_text(encoding="utf-8"))["name"] == "Иван"
 
 
@@ -569,7 +584,7 @@ def test_bot_switches_professional_categories(tmp_path) -> None:
     bot = JobTelegramBot(settings, api)
 
     bot.handle_update(callback("choose:categories"))
-    assert "Разработка и тестирование" in str(api.messages[-1][2])
+    assert "Разработка ПО" in str(api.messages[-1][2])
     bot.handle_update(callback("toggle:category:software"))
     assert bot._search_settings().categories == ("software",)
     bot.handle_update(callback("toggle:category:it_ops"))
@@ -588,7 +603,7 @@ def test_non_hh_opportunity_has_reply_button(tmp_path) -> None:
     bot = JobTelegramBot(settings, api)
     bot.handle_update(message("/history"))
     card_markup = [markup for _, _, markup, mode in api.messages if mode][-1]
-    assert card_markup["inline_keyboard"][0][0]["callback_data"] == "reply:wwr:abcdef1234"
+    assert card_markup["inline_keyboard"][0][0]["callback_data"] == "replycurrent:wwr:abcdef1234"
 
 
 def test_bot_edits_custom_fact_and_template_form_value(tmp_path) -> None:

@@ -1,22 +1,33 @@
-"""Provider taxonomy values for the two focused IT search categories."""
+"""Provider taxonomy values for the supported IT search categories."""
 
 import re
 
 CATEGORY_LABELS = {
-    "software": "Разработка и тестирование",
+    "software": "Разработка ПО",
     "it_ops": "Системы, сети и техподдержка",
 }
 
 DEFAULT_TECH_TITLES = (
-    "разработчик", "программист", "тестировщик", "инженер",
-    "администратор", "техподдерж", "аналитик данных",
-    "developer", "engineer", "programmer", "tester", "qa",
-    "devops", "sysadmin", "technical support", "data analyst",
+    "fullstack", "full-stack", "full stack", "фулстек",
+    "frontend", "front-end", "фронтенд", "backend", "back-end", "бэкенд",
+    "react", "next.js", "typescript", "node.js", "fastify",
+    "python developer", "python engineer", "python-разработчик",
+)
+DEFAULT_STACK_SIGNALS = (
+    "react", "next.js", "typescript", "node.js", "fastify", "python",
+    "javascript",
+)
+DEFAULT_EXCLUDED_TITLES = (
+    "qa", "tester", "testing", "тестировщик", "тестирование",
+    "quality assurance", "инженер по качеству",
+    "devops", "sre", "sysadmin", "системный администратор", "техподдерж",
+    "react native", "mobile", "мобильн",
+    "data scientist", "дата-сайентист",
 )
 
 # IDs from the HH professional roles directory, not free-text title matches.
 HH_ROLES = {
-    "software": ("96", "124", "160", "165"),
+    "software": ("96",),
     "it_ops": ("112", "113", "114", "116", "121"),
 }
 
@@ -37,7 +48,6 @@ HH_ROLE_LABELS = {
 REMOTIVE_CATEGORIES = {
     "Software Development": "software",
     "Artificial Intelligence": "software",
-    "Quality Assurance": "software",
     "Devops": "it_ops",
     "Information Technology": "it_ops",
 }
