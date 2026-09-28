@@ -100,6 +100,8 @@ SOURCE_LABELS = {
     "superjob": "SuperJob (нужен ключ)",
     "remotive": "Remotive",
     "wwr": "We Work Remotely",
+    "remoteok": "Remote OK",
+    "jobicy": "Jobicy",
     "fl": "FL.ru RSS",
     "freelancer": "Freelancer.com",
     "freelancehunt": "Freelancehunt",
@@ -251,7 +253,8 @@ def vacancy_message(
     message = (
         f"<b>{index}/{total} · {title}</b>\n"
         f"{company} · {area}\n"
-        f"{html.escape(vacancy.source)} · {'Заказ' if vacancy.kind == 'freelance' else 'Вакансия'} "
+        f"{html.escape(SOURCE_LABELS.get(vacancy.source, vacancy.source))} "
+        f"· {'Заказ' if vacancy.kind == 'freelance' else 'Вакансия'} "
         f"· {html.escape(vacancy.market.upper())} · "
         f"{'Бюджет' if vacancy.kind == 'freelance' else 'Зарплата'}: "
         f"{html.escape(vacancy.pay_label or _salary(vacancy))}\n"
