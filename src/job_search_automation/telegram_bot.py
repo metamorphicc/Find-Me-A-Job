@@ -100,8 +100,11 @@ SOURCE_LABELS = {
     "superjob": "SuperJob (нужен ключ)",
     "remotive": "Remotive",
     "wwr": "We Work Remotely",
+    "remoteok": "Remote OK",
+    "jobicy": "Jobicy",
     "fl": "FL.ru RSS",
     "freelancer": "Freelancer.com",
+    "freelancehunt": "Freelancehunt",
 }
 
 PROFILE_SECTIONS = {
@@ -250,11 +253,12 @@ def vacancy_message(
     message = (
         f"<b>{index}/{total} · {title}</b>\n"
         f"{company} · {area}\n"
-        f"{html.escape(vacancy.source)} · {'Заказ' if vacancy.kind == 'freelance' else 'Вакансия'} "
+        f"{html.escape(SOURCE_LABELS.get(vacancy.source, vacancy.source))} "
+        f"· {'Заказ' if vacancy.kind == 'freelance' else 'Вакансия'} "
         f"· {html.escape(vacancy.market.upper())} · "
         f"{'Бюджет' if vacancy.kind == 'freelance' else 'Зарплата'}: "
         f"{html.escape(vacancy.pay_label or _salary(vacancy))}\n"
-        f"{'Страна заказчика' if vacancy.source == 'freelancer' else 'География'}: "
+        f"{'Страна заказчика' if vacancy.source in {'freelancer', 'freelancehunt'} else 'География'}: "
         f"{html.escape(vacancy.location_scope or vacancy.area)}\n"
         f"{summary or 'Краткое описание отсутствует.'}\n\n"
         f'<a href="{url}">Открыть {item_label} ↗</a>\n'
@@ -296,7 +300,10 @@ class JobTelegramBot:
 
     def _job_settings(self) -> SearchConfig:
         settings = self._search_settings()
-        sources = tuple(source for source in settings.sources if source not in {"fl", "freelancer"})
+        sources = tuple(
+            source for source in settings.sources
+            if source not in {"fl", "freelancer", "freelancehunt"}
+        )
         if not sources:
             raise ConfigError("Включите источник вакансий в разделе «Поиск вакансий»")
         return replace(settings, sources=sources, kinds=("job",))
@@ -306,7 +313,12 @@ class JobTelegramBot:
         settings = load_search_settings(defaults, freelance_settings_path(self.config.database_path))
         # Order geography describes the client, not a candidate eligibility filter.
         return replace(
-            settings, sources=("freelancer",), kinds=("freelance",),
+            settings,
+            sources=tuple(
+                source for source in settings.sources
+                if source in {"freelancer", "freelancehunt"}
+            ),
+            kinds=("freelance",),
             categories=("software",), title_keywords=(), area_ids=(),
             remote_only=True, strict_remote=True, salary_min=None, salary_required=False,
         )
@@ -357,8 +369,10 @@ class JobTelegramBot:
             f"Темы и технологии: {', '.join(settings.stack_keywords) or 'не заданы'}\n"
             f"Исключить слова: {', '.join(settings.excluded_keywords) or 'нет'}\n"
             f"Опубликовано за: {settings.days} дн. · Лимит: {settings.per_query}\n"
-            "Источник: Freelancer.com. RU-площадка ещё не подключена надёжно.",
+            f"Источники: {', '.join(SOURCE_LABELS[source] for source in settings.sources)}. "
+            "FL.ru RSS пока отвечает нестабильно и не включён.",
             reply_markup={"inline_keyboard": [
+                [{"text": "Источники заказов", "callback_data": "choose:freelance_sources"}],
                 [{"text": "Темы и технологии", "callback_data": "edit:freelance:stack_keywords"}],
                 [{"text": "Исключить слова", "callback_data": "edit:freelance:excluded_keywords"}],
                 [{"text": "Давность", "callback_data": "choose:freelance_days"},
@@ -404,7 +418,7 @@ class JobTelegramBot:
             f"Исключить названия: {', '.join(settings.excluded_title_keywords) or 'нет'}\n"
             f"Запросы: {', '.join(settings.queries) or 'нет'}"
             f"{' (сейчас не используются)' if settings.categories else ''}\n"
-            f"Источники: {', '.join(source for source in settings.sources if source not in {'fl', 'freelancer'}) or 'не выбраны'}\n"
+            f"Источники: {', '.join(source for source in settings.sources if source not in {'fl', 'freelancer', 'freelancehunt'}) or 'не выбраны'}\n"
             "Тип: вакансии (заказы настраиваются отдельно)\n"
             f"Удалённо: {'да' if settings.remote_only else 'нет'}\n"
             f"Только полностью удалённо: {'да' if settings.strict_remote else 'нет'}\n"
@@ -773,7 +787,14 @@ class JobTelegramBot:
                     }
                 ]
                 for name, label in SOURCE_LABELS.items()
-                if name not in {"freelancer", "fl"}
+                if name not in {"freelancer", "freelancehunt", "fl"}
+            ]
+        elif choice == "freelance_sources":
+            settings = self._freelance_settings()
+            buttons = [
+                [{"text": f"{'✓' if name in settings.sources else '○'} {SOURCE_LABELS[name]}",
+                  "callback_data": f"ftoggle:source:{name}"}]
+                for name in ("freelancer", "freelancehunt")
             ]
         elif choice in {"freelance_days", "freelance_limit"}:
             field = "days" if choice == "freelance_days" else "limit"
@@ -875,6 +896,22 @@ class JobTelegramBot:
 
     def _apply_choice(self, chat_id: int, action: str) -> None:
         try:
+            if action.startswith("ftoggle:source:"):
+                source = action.removeprefix("ftoggle:source:")
+                if source not in {"freelancer", "freelancehunt"}:
+                    return
+                selected = set(self._freelance_settings().sources)
+                if source in selected:
+                    selected.remove(source)
+                else:
+                    selected.add(source)
+                if not selected:
+                    raise ConfigError("Оставьте хотя бы один источник заказов")
+                self._save_freelance_settings(
+                    sources=tuple(name for name in ("freelancer", "freelancehunt") if name in selected)
+                )
+                self._show_choices(chat_id, "freelance_sources")
+                return
             if action.startswith("fset:"):
                 _, field, raw_value = action.split(":", 2)
                 value = int(raw_value)
@@ -903,9 +940,12 @@ class JobTelegramBot:
                 return
             elif action.startswith("toggle:source:"):
                 source = action.removeprefix("toggle:source:")
-                if source not in SOURCE_LABELS or source in {"freelancer", "fl"}:
+                if source not in SOURCE_LABELS or source in {"freelancer", "freelancehunt", "fl"}:
                     return
-                selected = {name for name in settings.sources if name not in {"fl", "freelancer"}}
+                selected = {
+                    name for name in settings.sources
+                    if name not in {"fl", "freelancer", "freelancehunt"}
+                }
                 if source in selected:
                     selected.remove(source)
                 else:
@@ -1284,7 +1324,7 @@ class JobTelegramBot:
                     self._begin_edit(chat_id, parts[1], parts[2])
             elif action.startswith("choose:"):
                 self._show_choices(chat_id, action.removeprefix("choose:"))
-            elif action.startswith(("toggle:", "set:", "fset:")):
+            elif action.startswith(("toggle:", "set:", "fset:", "ftoggle:")):
                 self._apply_choice(chat_id, action)
 
     def scan(
