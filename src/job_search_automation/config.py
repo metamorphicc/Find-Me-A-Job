@@ -24,7 +24,7 @@ class ConfigError(ValueError):
     """Raised when the local search configuration is invalid."""
 
 
-SOURCE_IDS = frozenset({"hh", "superjob", "remotive", "wwr", "fl", "freelancer"})
+SOURCE_IDS = frozenset({"hh", "superjob", "remotive", "wwr", "fl", "freelancer", "freelancehunt"})
 
 
 @dc(frozen=True, slots=True)
@@ -111,7 +111,7 @@ def freelance_search_defaults(base: SearchConfig) -> SearchConfig:
     """Keep order discovery independent from the saved vacancy filters."""
     return replace(
         base,
-        sources=("freelancer",),
+        sources=("freelancer", "freelancehunt"),
         kinds=("freelance",),
         categories=("software",),
         excluded_keywords=(),

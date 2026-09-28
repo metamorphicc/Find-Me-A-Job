@@ -155,7 +155,7 @@ def test_freelance_defaults_ignore_client_country_but_require_coding_signal():
         title="Build a booking system", area="Brazil", location_scope="Brazil",
         summary="Use Python and PostgreSQL", categories=("software",),
     )
-    assert focused.sources == ("freelancer",)
+    assert focused.sources == ("freelancer", "freelancehunt")
     assert focused.kinds == ("freelance",)
     assert focused.area_ids == ()
     assert focused.title_keywords == ()

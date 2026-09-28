@@ -21,7 +21,9 @@ def _freelance_stack_match(vacancy: Vacancy, keywords: tuple[str, ...]) -> bool:
     # Trust them only when the title also asks for implementation work.
     implementation = re.search(
         r"\b(?:build|develop|create|implement|integrat\w*|automate|code|script|"
-        r"fix|debug|platform|application|module|system|dashboard|saas)\b",
+        r"fix|debug|platform|application|module|system|dashboard|saas|"
+        r"разработ\w*|розроб\w*|созда\w*|створ\w*|напис\w*|"
+        r"интегр\w*|інтегр\w*|автоматиз\w*|бот)\b",
         vacancy.title, re.IGNORECASE,
     )
     return bool(implementation and skills and any(
@@ -56,7 +58,7 @@ def rejection_reason(vacancy: Vacancy, config: SearchConfig) -> str | None:
     stack_text = f"{vacancy.title} {vacancy.summary}"
     stack_matches = (
         _freelance_stack_match(vacancy, config.stack_keywords)
-        if vacancy.source == "freelancer" and vacancy.kind == "freelance"
+        if vacancy.source in {"freelancer", "freelancehunt"} and vacancy.kind == "freelance"
         else any(_term_in_text(keyword, stack_text) for keyword in config.stack_keywords)
     )
     if config.stack_keywords and not stack_matches:

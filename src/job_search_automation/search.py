@@ -8,6 +8,7 @@ from playwright.sync_api import Error as PlaywrightError
 
 from job_search_automation.config import AppConfig, SearchConfig
 from job_search_automation.filters import rejection_reason
+from job_search_automation.freelancehunt import FreelancehuntClient
 from job_search_automation.freelancer import FreelancerClient
 from job_search_automation.hh import HhClient
 from job_search_automation.models import Vacancy
@@ -40,6 +41,7 @@ def build_providers(config: AppConfig) -> dict[str, SearchProvider]:
         "hh": HhClient(config.hh),
         "superjob": SuperJobClient(config.superjob_app_key),
         "freelancer": FreelancerClient(),
+        "freelancehunt": FreelancehuntClient(),
         **public_providers(),
     }
 
