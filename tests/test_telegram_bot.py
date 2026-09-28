@@ -15,7 +15,13 @@ from job_search_automation.models import Vacancy
 from job_search_automation.reply_templates import load_templates, templates_path
 from job_search_automation.search import ScanResult
 from job_search_automation.storage import VacancyStore
-from job_search_automation.telegram_bot import MAIN_KEYBOARD, PROFILE_BUTTON, JobTelegramBot
+from job_search_automation.telegram_bot import (
+    FREELANCE_BUTTON,
+    MAIN_KEYBOARD,
+    PROFILE_BUTTON,
+    SEARCH_BUTTON,
+    JobTelegramBot,
+)
 
 
 def vacancy(source_id: str = "123") -> Vacancy:
@@ -295,7 +301,7 @@ def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:
         return ScanResult([], 0, 0, "api")
 
     bot = JobTelegramBot(settings, api, scanner=scan)
-    bot.handle_update(message("/settings"))
+    bot.handle_update(message(SEARCH_BUTTON))
     assert "settings:search" in str(api.messages[-1][2])
 
     bot.handle_update(callback("edit:search:queries"))
@@ -311,7 +317,55 @@ def test_bot_edits_search_filters_and_uses_them_for_next_scan(tmp_path) -> None:
     assert used_searches[0].days == 14
     assert used_searches[0].experience_ids == ("noExperience",)
     saved = load_search_settings(settings.search, search_settings_path(settings.database_path))
-    assert saved == used_searches[0]
+    assert replace(saved, kinds=("job",)) == used_searches[0]
+
+
+def test_vacancy_and_order_sections_have_separate_filters_and_history(tmp_path) -> None:
+    settings = config(tmp_path)
+    api = FakeApi()
+    searches = []
+
+    def scan(current):
+        searches.append(current.search)
+        item = (
+            replace(
+                vacancy("f1"), source="freelancer", kind="freelance",
+                title="Build booking platform", summary="Python API", categories=("software",),
+                area="Brazil", location_scope="Brazil",
+            ) if current.search.kinds == ("freelance",) else vacancy("j1")
+        )
+        with VacancyStore(settings.database_path) as store:
+            new_items = store.save([item])
+        return ScanResult(new_items, 1, 1, "api")
+
+    bot = JobTelegramBot(settings, api, scanner=scan)
+    assert FREELANCE_BUTTON in str(MAIN_KEYBOARD)
+    bot.handle_update(message(FREELANCE_BUTTON))
+    assert "scan:freelance" in str(api.messages[-1][2])
+    assert "settings:freelance" in str(api.messages[-1][2])
+    bot.handle_update(callback("settings:freelance"))
+    assert "География заказчика: любая" in api.messages[-1][1]
+    bot.handle_update(callback("edit:freelance:stack_keywords"))
+    bot.handle_update(message("python, llm"))
+    bot.handle_update(callback("fset:days:14"))
+    assert bot._freelance_settings().stack_keywords == ("python", "llm")
+    assert bot._freelance_settings().days == 14
+    assert bot._search_settings().days == 7
+
+    bot.handle_update(callback("scan:freelance"))
+    order_settings = searches[-1]
+    assert order_settings.sources == ("freelancer",)
+    assert order_settings.kinds == ("freelance",)
+    assert order_settings.area_ids == ()
+    assert order_settings.title_keywords == ()
+    assert "Открыть заказ" in api.messages[-1][1]
+    bot.handle_update(callback("scan:job"))
+    assert searches[-1].sources == ("hh",)
+    assert searches[-1].kinds == ("job",)
+    bot.handle_update(callback("fhistory:0"))
+    assert "Build booking platform" in api.messages[-1][1]
+    bot.handle_update(callback("history:0"))
+    assert "Junior Python" in api.messages[-1][1]
 
 
 def test_bot_edits_precise_search_filters(tmp_path) -> None:
@@ -597,13 +651,20 @@ def test_non_hh_opportunity_has_reply_button(tmp_path) -> None:
     settings = config(tmp_path)
     write_profile(settings.profile_path)
     api = FakeApi()
-    item = replace(vacancy(), source="wwr", source_id="abcdef1234", kind="freelance")
+    item = replace(
+        vacancy(), source="freelancer", source_id="abcdef1234", kind="freelance",
+        title="Build Python service", summary="API in Python", categories=("software",),
+        area="Germany", location_scope="Germany",
+    )
     with VacancyStore(settings.database_path) as store:
         store.save([item])
     bot = JobTelegramBot(settings, api)
-    bot.handle_update(message("/history"))
+    bot.handle_update(callback("fhistory:0"))
     card_markup = [markup for _, _, markup, mode in api.messages if mode][-1]
-    assert card_markup["inline_keyboard"][0][0]["callback_data"] == "replycurrent:wwr:abcdef1234"
+    assert card_markup["inline_keyboard"][0][0]["callback_data"] == (
+        "replycurrent:freelancer:abcdef1234"
+    )
+    assert "appprep:" not in str(card_markup)
 
 
 def test_bot_edits_custom_fact_and_template_form_value(tmp_path) -> None:

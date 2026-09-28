@@ -14,6 +14,7 @@ from job_search_automation.categories import (
     DEFAULT_EXCLUDED_TITLES,
     DEFAULT_STACK_SIGNALS,
     DEFAULT_TECH_TITLES,
+    FREELANCE_EXCLUDED_TITLES,
     FREELANCE_TECH_SIGNALS,
     HH_ROLE_LABELS,
 )
@@ -113,6 +114,8 @@ def freelance_search_defaults(base: SearchConfig) -> SearchConfig:
         sources=("freelancer",),
         kinds=("freelance",),
         categories=("software",),
+        excluded_keywords=(),
+        excluded_title_keywords=FREELANCE_EXCLUDED_TITLES,
         title_keywords=(),
         stack_keywords=FREELANCE_TECH_SIGNALS,
         area_ids=(),

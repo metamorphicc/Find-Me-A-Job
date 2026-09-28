@@ -163,4 +163,22 @@ def test_freelance_defaults_ignore_client_country_but_require_coding_signal():
     assert rejection_reason(replace(project, title="Write paid email copy", summary=""), focused) == (
         "title and description do not mention the selected stack"
     )
+    assert rejection_reason(
+        replace(project, title="Map creation", summary="Project description included"), focused
+    ) == "title and description do not mention the selected stack"
     assert rejection_reason(replace(project, work_formats=("ON_SITE",)), focused) == "not remote"
+
+
+def test_freelance_skill_tags_need_implementation_context():
+    focused = freelance_search_defaults(settings())
+    base = replace(
+        vacancy("REMOTE"), source="freelancer", kind="freelance",
+        categories=("software",), summary="Project description.\nНавыки: Python",
+    )
+    assert rejection_reason(replace(base, title="Build booking system"), focused) is None
+    assert rejection_reason(replace(base, title="Map creation"), focused) == (
+        "title and description do not mention the selected stack"
+    )
+    assert rejection_reason(replace(base, title="WordPress API design"), focused) == (
+        "title contains an excluded role"
+    )
