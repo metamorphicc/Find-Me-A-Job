@@ -1,0 +1,23 @@
+services:
+  bot:
+    build: .
+    image: find-me-a-job-bot:local
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    environment:
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      JOB_SEARCH_HEADLESS: "1"
+    secrets:
+      - telegram_bot_token
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - runtime:/app/runtime
+      - ./resumes:/app/runtime/resumes:ro
+
+secrets:
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token
+
+volumes:
+  runtime:

@@ -1,0 +1,24 @@
+[search]
+queries = ["Python", "TypeScript"]
+sources = ["hh", "remotive", "wwr"]
+categories = ["software"]
+remote_only = true
+strict_remote = true
+days = 7
+per_query = 50
+
+[hh]
+user_agent = "JobSearchAutomation/0.1 (YOUR_EMAIL)"
+
+[storage]
+database = "runtime/data/jobs.db"
+reports_dir = "runtime/reports"
+
+[telegram]
+allowed_user_ids = [123456789]
+profile = "runtime/profile.json"
+
+[schedule]
+enabled = false
+time = "09:00"
+timezone = "Asia/Novosibirsk"

@@ -262,6 +262,16 @@ def save_search_settings(settings: SearchConfig, path: Path) -> None:
     os.replace(temporary, path)
 
 
+def _telegram_bot_token(configured: str) -> str:
+    token_file = os.environ.get("TELEGRAM_BOT_TOKEN_FILE")
+    if token_file:
+        try:
+            return Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ConfigError("Cannot read TELEGRAM_BOT_TOKEN_FILE") from exc
+    return (os.environ.get("TELEGRAM_BOT_TOKEN") or configured).strip()
+
+
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path)
     if not config_path.is_file():
@@ -349,9 +359,7 @@ def load_config(path: str | Path) -> AppConfig:
         database_path=database_path,
         reports_dir=reports_dir,
         telegram=TelegramConfig(
-            bot_token=(
-                os.environ.get("TELEGRAM_BOT_TOKEN") or str(telegram_raw.get("bot_token", ""))
-            ).strip(),
+            bot_token=_telegram_bot_token(str(telegram_raw.get("bot_token", ""))),
             allowed_user_ids=tuple(allowed_ids),
             page_size=_bounded_int(telegram_raw.get("page_size", 5), "telegram.page_size", 1, 10),
         ),
