@@ -1,7 +1,32 @@
 from __future__ import annotations
 
+import re
+
 from job_search_automation.config import SearchConfig
 from job_search_automation.models import Vacancy
+
+
+def _term_in_text(term: str, text: str) -> bool:
+    if term.isascii():
+        return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text, re.IGNORECASE) is not None
+    return term.casefold() in text.casefold()
+
+
+def _freelance_stack_match(vacancy: Vacancy, keywords: tuple[str, ...]) -> bool:
+    description, _, skills = vacancy.summary.partition("\nНавыки:")
+    task = f"{vacancy.title} {description}"
+    if any(_term_in_text(keyword, task) for keyword in keywords):
+        return True
+    # Provider tags alone are noisy (design jobs often carry PHP/JS tags).
+    # Trust them only when the title also asks for implementation work.
+    implementation = re.search(
+        r"\b(?:build|develop|create|implement|integrat\w*|automate|code|script|"
+        r"fix|debug|platform|application|module|system|dashboard|saas)\b",
+        vacancy.title, re.IGNORECASE,
+    )
+    return bool(implementation and skills and any(
+        _term_in_text(keyword, skills) for keyword in keywords
+    ))
 
 
 def rejection_reason(vacancy: Vacancy, config: SearchConfig) -> str | None:
@@ -28,10 +53,13 @@ def rejection_reason(vacancy: Vacancy, config: SearchConfig) -> str | None:
         keyword.casefold() in vacancy.title.casefold() for keyword in config.title_keywords
     ):
         return "title does not contain a required phrase"
-    stack_text = f"{vacancy.title} {vacancy.summary}".casefold()
-    if config.stack_keywords and not any(
-        keyword.casefold() in stack_text for keyword in config.stack_keywords
-    ):
+    stack_text = f"{vacancy.title} {vacancy.summary}"
+    stack_matches = (
+        _freelance_stack_match(vacancy, config.stack_keywords)
+        if vacancy.source == "freelancer" and vacancy.kind == "freelance"
+        else any(_term_in_text(keyword, stack_text) for keyword in config.stack_keywords)
+    )
+    if config.stack_keywords and not stack_matches:
         return "title and description do not mention the selected stack"
     if config.remote_only and not vacancy.is_remote():
         return "not remote"

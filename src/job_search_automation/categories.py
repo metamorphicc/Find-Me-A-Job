@@ -17,12 +17,26 @@ DEFAULT_STACK_SIGNALS = (
     "react", "next.js", "typescript", "node.js", "fastify", "python",
     "javascript",
 )
+FREELANCE_TECH_SIGNALS = (
+    "python", "javascript", "typescript", "react", "next.js", "node.js",
+    "fastify", "postgresql", "sql", "api", "backend", "frontend", "fullstack",
+    "web application", "software application", "script", "automation", "automate",
+    "integration", "chatbot", "telegram bot", "docker", "solidity",
+    "ai", "llm", "agent", "machine learning", "artificial intelligence",
+    "разработ", "программ", "автоматизац", "интеграц", "агент", "бот",
+)
 DEFAULT_EXCLUDED_TITLES = (
     "qa", "tester", "testing", "тестировщик", "тестирование",
     "quality assurance", "инженер по качеству",
     "devops", "sre", "sysadmin", "системный администратор", "техподдерж",
     "react native", "mobile", "мобильн",
     "data scientist", "дата-сайентист",
+)
+FREELANCE_EXCLUDED_TITLES = DEFAULT_EXCLUDED_TITLES + (
+    "wordpress", "woocommerce", "shopify", "seo", "marketing", "graphic design",
+    "web design", "website design", "logo", "android", "ios", "network",
+    "data mining", "sales funnel", "promotion", "layout", "portfolio website",
+    "course", "security reviewer", "interested to buy",
 )
 
 # IDs from the HH professional roles directory, not free-text title matches.

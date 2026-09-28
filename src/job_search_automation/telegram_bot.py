@@ -19,6 +19,8 @@ from job_search_automation.config import (
     AppConfig,
     ConfigError,
     SearchConfig,
+    freelance_search_defaults,
+    freelance_settings_path,
     load_schedule_settings,
     load_search_settings,
     save_schedule_settings,
@@ -60,12 +62,13 @@ from job_search_automation.storage import ApplicationStateError, VacancyStore
 from job_search_automation.tilda_apply import FillError
 
 SEARCH_BUTTON = "🔎 Искать вакансии"
+FREELANCE_BUTTON = "🧩 Искать заказы"
 HISTORY_BUTTON = "📚 Ранее найденные"
 SETTINGS_BUTTON = "⚙️ Настройки"
 PROFILE_BUTTON = "👤 Профиль"
 MAIN_KEYBOARD = {
     "keyboard": [
-        [{"text": SEARCH_BUTTON}, {"text": HISTORY_BUTTON}],
+        [{"text": SEARCH_BUTTON}, {"text": FREELANCE_BUTTON}],
         [{"text": PROFILE_BUTTON}, {"text": SETTINGS_BUTTON}],
     ],
     "resize_keyboard": True,
@@ -243,6 +246,7 @@ def vacancy_message(
     area = html.escape(vacancy.area)
     summary = html.escape(_shorten(vacancy.summary, 320))
     url = html.escape(vacancy.url, quote=True)
+    item_label = "заказ" if vacancy.kind == "freelance" else "вакансию"
     message = (
         f"<b>{index}/{total} · {title}</b>\n"
         f"{company} · {area}\n"
@@ -250,9 +254,10 @@ def vacancy_message(
         f"· {html.escape(vacancy.market.upper())} · "
         f"{'Бюджет' if vacancy.kind == 'freelance' else 'Зарплата'}: "
         f"{html.escape(vacancy.pay_label or _salary(vacancy))}\n"
-        f"География: {html.escape(vacancy.location_scope or vacancy.area)}\n"
+        f"{'Страна заказчика' if vacancy.source == 'freelancer' else 'География'}: "
+        f"{html.escape(vacancy.location_scope or vacancy.area)}\n"
         f"{summary or 'Краткое описание отсутствует.'}\n\n"
-        f'<a href="{url}">Открыть вакансию ↗</a>\n'
+        f'<a href="{url}">Открыть {item_label} ↗</a>\n'
         f"{url}"
     )
     return message
@@ -272,6 +277,8 @@ class JobTelegramBot:
         self.scanner = scanner
         self.new_items: dict[int, list[Vacancy]] = {}
         self.history_items: dict[int, list[Vacancy]] = {}
+        self.freelance_new_items: dict[int, list[Vacancy]] = {}
+        self.freelance_history_items: dict[int, list[Vacancy]] = {}
         self.pending_edits: dict[int, tuple[str, str]] = {}
         self.profile_setup: set[int] = set()
         self.applications = application_manager or ApplicationManager(
@@ -287,15 +294,87 @@ class JobTelegramBot:
         save_search_settings(updated, search_settings_path(self.config.database_path))
         self.history_items.clear()
 
+    def _job_settings(self) -> SearchConfig:
+        settings = self._search_settings()
+        sources = tuple(source for source in settings.sources if source not in {"fl", "freelancer"})
+        if not sources:
+            raise ConfigError("Включите источник вакансий в разделе «Поиск вакансий»")
+        return replace(settings, sources=sources, kinds=("job",))
+
+    def _freelance_settings(self) -> SearchConfig:
+        defaults = freelance_search_defaults(self.config.search)
+        settings = load_search_settings(defaults, freelance_settings_path(self.config.database_path))
+        # Order geography describes the client, not a candidate eligibility filter.
+        return replace(
+            settings, sources=("freelancer",), kinds=("freelance",),
+            categories=("software",), title_keywords=(), area_ids=(),
+            remote_only=True, strict_remote=True, salary_min=None, salary_required=False,
+        )
+
+    def _save_freelance_settings(self, **changes: Any) -> None:
+        updated = replace(self._freelance_settings(), **changes)
+        save_search_settings(updated, freelance_settings_path(self.config.database_path))
+        self.freelance_history_items.clear()
+
+    def show_search_section(self, chat_id: int, kind: str) -> None:
+        if kind not in {"job", "freelance"}:
+            return
+        label = "вакансии" if kind == "job" else "заказы"
+        try:
+            settings = self._job_settings() if kind == "job" else self._freelance_settings()
+            sources = ", ".join(SOURCE_LABELS[source] for source in settings.sources)
+        except ConfigError as exc:
+            sources = f"Настройка требует внимания: {exc}"
+        note = (
+            "Для заказов ищу только удалённые технические проекты: код, автоматизацию, AI и агентов. "
+            "Страна заказчика не ограничивает поиск; возможность отклика уточняйте на площадке."
+            if kind == "freelance" else "Фильтры вакансий не влияют на поиск заказов."
+        )
+        self.api.send_message(
+            chat_id, f"{'🧩' if kind == 'freelance' else '💼'} Поиск: {label}\n"
+            f"Источники: {sources}.\n{note}",
+            reply_markup={"inline_keyboard": [
+                [{"text": f"🔎 Искать {label}", "callback_data": f"scan:{kind}"}],
+                [{"text": "📚 Ранее найденные", "callback_data":
+                  "fhistory:0" if kind == "freelance" else "history:0"}],
+                [{"text": "⚙️ Фильтры заказов" if kind == "freelance" else "⚙️ Фильтры вакансий",
+                  "callback_data": "settings:freelance" if kind == "freelance" else "settings:search"}],
+                [{"text": "← Главное меню", "callback_data": "menu:main"}],
+            ]},
+        )
+
+    def show_freelance_settings(self, chat_id: int) -> None:
+        try:
+            settings = self._freelance_settings()
+        except ConfigError as exc:
+            self.api.send_message(chat_id, f"Не удалось прочитать фильтры заказов: {exc}")
+            return
+        self.api.send_message(
+            chat_id,
+            "Фильтры заказов (отдельно от вакансий):\n"
+            "Тип: только удалённые проекты по разработке ПО.\n"
+            "География заказчика: любая.\n"
+            f"Темы и технологии: {', '.join(settings.stack_keywords) or 'не заданы'}\n"
+            f"Исключить слова: {', '.join(settings.excluded_keywords) or 'нет'}\n"
+            f"Опубликовано за: {settings.days} дн. · Лимит: {settings.per_query}\n"
+            "Источник: Freelancer.com. RU-площадка ещё не подключена надёжно.",
+            reply_markup={"inline_keyboard": [
+                [{"text": "Темы и технологии", "callback_data": "edit:freelance:stack_keywords"}],
+                [{"text": "Исключить слова", "callback_data": "edit:freelance:excluded_keywords"}],
+                [{"text": "Давность", "callback_data": "choose:freelance_days"},
+                 {"text": "Лимит", "callback_data": "choose:freelance_limit"}],
+                [{"text": "← К поиску заказов", "callback_data": "menu:freelance"}],
+            ]},
+        )
+
     def show_settings(self, chat_id: int) -> None:
         self.api.send_message(
             chat_id,
-            "Что изменить? Настройки поиска применяются к следующему запуску. "
-            "Профиль открывается отдельной кнопкой в главном меню.",
+            "Общие настройки. Фильтры вакансий и заказов находятся в их разделах "
+            "главного меню; профиль открывается отдельной кнопкой.",
             reply_markup={
                 "inline_keyboard": [
-                    [{"text": "🔎 Фильтры поиска", "callback_data": "settings:search"}],
-                    [{"text": "⏰ Ежедневный поиск", "callback_data": "settings:schedule"}],
+                    [{"text": "⏰ Ежедневный поиск вакансий", "callback_data": "settings:schedule"}],
                     [{"text": "✉️ Шаблоны отклика", "callback_data": "templates"}],
                     [{"text": "← Назад", "callback_data": "menu:main"}],
                 ]
@@ -325,8 +404,8 @@ class JobTelegramBot:
             f"Исключить названия: {', '.join(settings.excluded_title_keywords) or 'нет'}\n"
             f"Запросы: {', '.join(settings.queries) or 'нет'}"
             f"{' (сейчас не используются)' if settings.categories else ''}\n"
-            f"Источники: {', '.join(settings.sources)}\n"
-            f"Типы: {', '.join(settings.kinds)}\n"
+            f"Источники: {', '.join(source for source in settings.sources if source not in {'fl', 'freelancer'}) or 'не выбраны'}\n"
+            "Тип: вакансии (заказы настраиваются отдельно)\n"
             f"Удалённо: {'да' if settings.remote_only else 'нет'}\n"
             f"Только полностью удалённо: {'да' if settings.strict_remote else 'нет'}\n"
             f"Опыт: {experience}\n"
@@ -347,8 +426,7 @@ class JobTelegramBot:
                     [{"text": "Исключить названия", "callback_data": "edit:search:excluded_title_keywords"}],
                     [{"text": "Запросы (текстовый режим)", "callback_data": "edit:search:queries"}],
                     [
-                        {"text": "Источники", "callback_data": "choose:sources"},
-                        {"text": "Работа / заказы", "callback_data": "choose:kinds"},
+                        {"text": "Источники вакансий", "callback_data": "choose:sources"},
                     ],
                     [
                         {
@@ -374,7 +452,7 @@ class JobTelegramBot:
                         {"text": "Лимит", "callback_data": "choose:limit"},
                     ],
                     [{"text": "Исключить слова", "callback_data": "edit:search:excluded_keywords"}],
-                    [{"text": "← Настройки", "callback_data": "settings"}],
+                    [{"text": "← К вакансиям", "callback_data": "menu:job"}],
                 ]
             },
         )
@@ -524,7 +602,7 @@ class JobTelegramBot:
             return
         self.api.send_message(
             chat_id,
-            f"Ежедневный поиск: {'включён' if schedule.enabled else 'выключен'}\n"
+            f"Ежедневный поиск вакансий: {'включён' if schedule.enabled else 'выключен'}\n"
             f"Время: {schedule.time} ({schedule.timezone})\n"
             "Бот должен работать на включённом компьютере или сервере.",
             reply_markup={
@@ -585,6 +663,11 @@ class JobTelegramBot:
                 if field not in {"name", "about", "contact"}
                 else ""
             )
+        elif kind == "freelance" and field in {"stack_keywords", "excluded_keywords"}:
+            label = "Темы и технологии заказов" if field == "stack_keywords" else "Исключаемые слова"
+            extra = " Перечислите через запятую или с новой строки."
+            if field == "excluded_keywords":
+                extra += " Отправьте '-' для очистки."
         elif kind == "search" and field in {
             "queries", "excluded_keywords", "area_ids", "title_keywords",
             "stack_keywords", "excluded_title_keywords", "salary_min"
@@ -646,13 +729,18 @@ class JobTelegramBot:
                     items = ()
                 if field == "queries" and not items:
                     raise ConfigError("Укажите хотя бы один поисковый запрос")
+                if kind == "freelance" and field == "stack_keywords" and not items:
+                    raise ConfigError("Оставьте хотя бы одну техническую тему")
                 if len(items) > (20 if field in {"queries", "title_keywords", "stack_keywords"} else 30) or any(
                     len(item) > 80 for item in items
                 ):
                     raise ConfigError("Слишком много значений или слишком длинный текст")
                 if field == "area_ids" and any(not item.isdigit() for item in items):
                     raise ConfigError("Для региона нужны числовые ID HeadHunter")
-                self._save_search_settings(**{field: items})
+                if kind == "freelance":
+                    self._save_freelance_settings(**{field: items})
+                else:
+                    self._save_search_settings(**{field: items})
         except (ConfigError, ProfileError, TemplateError, OSError, ValueError) as exc:
             self.api.send_message(chat_id, f"Не сохранил: {exc}. Попробуйте ещё раз или /cancel.")
             return
@@ -669,6 +757,8 @@ class JobTelegramBot:
             self.show_profile_section(chat_id, "facts")
         elif kind == "schedule":
             self.show_schedule_settings(chat_id)
+        elif kind == "freelance":
+            self.show_freelance_settings(chat_id)
         else:
             self.show_search_settings(chat_id)
 
@@ -683,6 +773,15 @@ class JobTelegramBot:
                     }
                 ]
                 for name, label in SOURCE_LABELS.items()
+                if name not in {"freelancer", "fl"}
+            ]
+        elif choice in {"freelance_days", "freelance_limit"}:
+            field = "days" if choice == "freelance_days" else "limit"
+            values = (3, 7, 14, 30) if field == "days" else (20, 50, 100)
+            buttons = [
+                [{"text": f"{value} дн." if field == "days" else str(value),
+                  "callback_data": f"fset:{field}:{value}"}]
+                for value in values
             ]
         elif choice == "kinds":
             settings = self._search_settings()
@@ -766,13 +865,27 @@ class JobTelegramBot:
             ]
         else:
             return
-        buttons.append([{"text": "← Фильтры", "callback_data": "settings:search"}])
+        buttons.append([{
+            "text": "← Фильтры заказов" if choice.startswith("freelance_") else "← Фильтры вакансий",
+            "callback_data": "settings:freelance" if choice.startswith("freelance_") else "settings:search",
+        }])
         self.api.send_message(
             chat_id, "Выберите значение:", reply_markup={"inline_keyboard": buttons}
         )
 
     def _apply_choice(self, chat_id: int, action: str) -> None:
         try:
+            if action.startswith("fset:"):
+                _, field, raw_value = action.split(":", 2)
+                value = int(raw_value)
+                if field == "days" and value in {3, 7, 14, 30}:
+                    self._save_freelance_settings(days=value)
+                elif field == "limit" and value in {20, 50, 100}:
+                    self._save_freelance_settings(per_query=value)
+                else:
+                    return
+                self.show_freelance_settings(chat_id)
+                return
             settings = self._search_settings()
             if action == "toggle:remote":
                 enabled = not settings.remote_only
@@ -790,9 +903,9 @@ class JobTelegramBot:
                 return
             elif action.startswith("toggle:source:"):
                 source = action.removeprefix("toggle:source:")
-                if source not in SOURCE_LABELS:
+                if source not in SOURCE_LABELS or source in {"freelancer", "fl"}:
                     return
-                selected = set(settings.sources)
+                selected = {name for name in settings.sources if name not in {"fl", "freelancer"}}
                 if source in selected:
                     selected.remove(source)
                 else:
@@ -927,7 +1040,7 @@ class JobTelegramBot:
                 self._save_search_settings(per_query=int(action.removeprefix("set:limit:")))
             else:
                 return
-        except (ConfigError, OSError) as exc:
+        except (ConfigError, OSError, ValueError) as exc:
             self.api.send_message(chat_id, f"Не сохранил фильтр: {exc}")
             return
         self.show_search_settings(chat_id)
@@ -994,11 +1107,19 @@ class JobTelegramBot:
                 self.profile_setup.discard(chat_id)
                 self.api.send_message(
                     chat_id,
-                    "Нажмите «Искать вакансии», чтобы проверить новые подходящие позиции. "
-                    "Фильтры находятся в настройках, данные для отклика — в профиле.",
+                    "Выберите поиск вакансий или заказов. У каждого раздела свои фильтры и история; "
+                    "данные для отклика — в профиле.",
                     reply_markup=MAIN_KEYBOARD,
                 )
-            elif text == SEARCH_BUTTON or text.startswith("/scan"):
+            elif text == SEARCH_BUTTON:
+                self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
+                self.show_search_section(chat_id, "job")
+            elif text == FREELANCE_BUTTON or text.startswith("/orders"):
+                self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
+                self.show_search_section(chat_id, "freelance")
+            elif text.startswith("/scan"):
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
                 self.scan(chat_id)
@@ -1025,7 +1146,7 @@ class JobTelegramBot:
             else:
                 self.api.send_message(
                     chat_id,
-                    "Используйте кнопки поиска, истории, профиля и настроек.",
+                    "Используйте кнопки вакансий, заказов, профиля и настроек.",
                     reply_markup=MAIN_KEYBOARD,
                 )
             return
@@ -1049,22 +1170,32 @@ class JobTelegramBot:
             message_id = (callback.get("message") or {}).get("message_id")
             if not isinstance(message_id, int):
                 message_id = None
-            if action == "scan":
+            if action in {"scan", "scan:job", "scan:freelance"}:
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
-                self.scan(chat_id)
+                self.scan(chat_id, kind="freelance" if action == "scan:freelance" else "job")
             elif action.startswith("new:") and action[4:].isdigit() and len(action) <= 10:
                 self.profile_setup.discard(chat_id)
                 self.show_new(chat_id, int(action[4:]), message_id=message_id)
+            elif action.startswith("fnew:") and action[5:].isdigit() and len(action) <= 11:
+                self.profile_setup.discard(chat_id)
+                self.show_new(chat_id, int(action[5:]), kind="freelance", message_id=message_id)
             elif action.startswith("history:") and action[8:].isdigit() and len(action) <= 14:
                 self.profile_setup.discard(chat_id)
                 self.show_history(chat_id, int(action[8:]), message_id=message_id)
+            elif action.startswith("fhistory:") and action[9:].isdigit() and len(action) <= 15:
+                self.profile_setup.discard(chat_id)
+                self.show_history(chat_id, int(action[9:]), kind="freelance", message_id=message_id)
             elif action == "menu:main":
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
                 self.api.send_message(
                     chat_id, "Главное меню: выберите действие.", reply_markup=MAIN_KEYBOARD
                 )
+            elif action in {"menu:job", "menu:freelance"}:
+                self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
+                self.show_search_section(chat_id, action.removeprefix("menu:"))
             elif action == "settings":
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
@@ -1073,6 +1204,10 @@ class JobTelegramBot:
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
                 self.show_search_settings(chat_id)
+            elif action == "settings:freelance":
+                self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
+                self.show_freelance_settings(chat_id)
             elif action == "settings:schedule":
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
@@ -1149,15 +1284,21 @@ class JobTelegramBot:
                     self._begin_edit(chat_id, parts[1], parts[2])
             elif action.startswith("choose:"):
                 self._show_choices(chat_id, action.removeprefix("choose:"))
-            elif action.startswith(("toggle:", "set:")):
+            elif action.startswith(("toggle:", "set:", "fset:")):
                 self._apply_choice(chat_id, action)
 
-    def scan(self, chat_id: int, result: ScanResult | None = None) -> ScanResult | None:
+    def scan(
+        self, chat_id: int, result: ScanResult | None = None, *, kind: str = "job"
+    ) -> ScanResult | None:
+        if kind not in {"job", "freelance"}:
+            return None
+        label = "заказы" if kind == "freelance" else "вакансии"
         progress_id = None
         if result is None:
-            progress_id = self.api.send_message(chat_id, "Ищу вакансии по сохранённым фильтрам…")
+            progress_id = self.api.send_message(chat_id, f"Ищу {label} по сохранённым фильтрам…")
             try:
-                current_config = replace(self.config, search=self._search_settings())
+                search = self._freelance_settings() if kind == "freelance" else self._job_settings()
+                current_config = replace(self.config, search=search)
                 result = self.scanner(current_config)
             except (ConfigError, HhApiError, SearchError, PlaywrightError, OSError) as exc:
                 self._show_card(
@@ -1165,24 +1306,28 @@ class JobTelegramBot:
                     message_id=progress_id,
                 )
                 return None
-        self.new_items[chat_id] = result.new_items
-        self.history_items.pop(chat_id, None)
+        new_items = self.freelance_new_items if kind == "freelance" else self.new_items
+        history_items = self.freelance_history_items if kind == "freelance" else self.history_items
+        new_items[chat_id] = result.new_items
+        history_items.pop(chat_id, None)
         if result.errors:
             self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
         if not result.new_items:
             self._show_card(
                 chat_id,
-                f"Новых подходящих вакансий нет. Проверено: {result.fetched_count}, "
+                f"Новых подходящих {'заказов' if kind == 'freelance' else 'вакансий'} нет. "
+                f"Проверено: {result.fetched_count}, "
                 f"подошло: {result.accepted_count}. Можно посмотреть уже найденные.",
                 reply_markup={
                     "inline_keyboard": [
-                        [{"text": "📚 Посмотреть найденные", "callback_data": "history:0"}]
+                        [{"text": "📚 Посмотреть найденные", "callback_data":
+                          "fhistory:0" if kind == "freelance" else "history:0"}]
                     ]
                 },
                 message_id=progress_id,
             )
             return result
-        self.show_new(chat_id, 0, message_id=progress_id)
+        self.show_new(chat_id, 0, kind=kind, message_id=progress_id)
         return result
 
     def _begin_application(self, chat_id: int, source: str, source_id: str) -> None:
@@ -1369,7 +1514,8 @@ class JobTelegramBot:
         ]
         self.api.send_message(
             chat_id,
-            f"Шаблон для вакансии «{vacancy.title}». Сейчас выбран: {selected.name}.",
+            f"Шаблон для {'заказа' if vacancy.kind == 'freelance' else 'вакансии'} "
+            f"«{vacancy.title}». Сейчас выбран: {selected.name}.",
             reply_markup={"inline_keyboard": buttons},
         )
 
@@ -1406,9 +1552,10 @@ class JobTelegramBot:
             return
         title = html.escape(vacancy.title)
         url = html.escape(vacancy.url, quote=True)
+        item_label = "заказ" if vacancy.kind == "freelance" else "вакансию"
         message = (
             f"<b>{title}</b> · шаблон «{html.escape(template.name)}»\n"
-            f'<a href="{url}">Открыть вакансию ↗</a>\n{url}\n\n'
+            f'<a href="{url}">Открыть {item_label} ↗</a>\n{url}\n\n'
             f"<pre>{application}</pre>"
         )
         if len(message) > 4000:
@@ -1440,7 +1587,9 @@ class JobTelegramBot:
         ]
         with VacancyStore(self.config.database_path) as store:
             record = store.application(vacancy.source, vacancy.source_id)
-        if record is None or record.status not in {"attempted", "submitted"}:
+        if vacancy.kind == "job" and (
+            record is None or record.status not in {"attempted", "submitted"}
+        ):
             buttons.append(
                 [
                     {
@@ -1462,48 +1611,59 @@ class JobTelegramBot:
                 chat_id, message_id, text, reply_markup=reply_markup, html_mode=html_mode
             )
 
-    def show_new(self, chat_id: int, page: int, *, message_id: int | None = None) -> None:
-        items = self.new_items.get(chat_id, [])
+    def show_new(
+        self, chat_id: int, page: int, *, kind: str = "job", message_id: int | None = None
+    ) -> None:
+        items = (self.freelance_new_items if kind == "freelance" else self.new_items).get(chat_id, [])
+        label = "заказов" if kind == "freelance" else "вакансий"
+        prefix = "fnew" if kind == "freelance" else "new"
+        history_prefix = "fhistory" if kind == "freelance" else "history"
         if not items:
             self._show_card(
-                chat_id, "Список новых вакансий пуст. Запустите поиск ещё раз.",
+                chat_id, f"Список новых {label} пуст. Запустите поиск ещё раз.",
                 message_id=message_id,
             )
             return
         if page >= len(items):
-            self._show_card(chat_id, "Это последняя карточка новых вакансий.", message_id=message_id)
+            self._show_card(chat_id, f"Это последняя карточка новых {label}.", message_id=message_id)
             return
         profile = self._optional_profile(chat_id)
         vacancy = items[page]
         markup = self._reply_button(vacancy, profile) or {"inline_keyboard": []}
         arrows = []
         if page > 0:
-            arrows.append({"text": "←", "callback_data": f"new:{page - 1}"})
+            arrows.append({"text": "←", "callback_data": f"{prefix}:{page - 1}"})
         if page + 1 < len(items):
-            arrows.append({"text": "→", "callback_data": f"new:{page + 1}"})
+            arrows.append({"text": "→", "callback_data": f"{prefix}:{page + 1}"})
         if arrows:
             markup["inline_keyboard"].append(arrows)
         markup["inline_keyboard"].append(
-            [{"text": "📚 Ранее найденные", "callback_data": "history:0"}]
+            [{"text": "📚 Ранее найденные", "callback_data": f"{history_prefix}:0"}]
         )
         self._show_card(
             chat_id, vacancy_message(vacancy, page + 1, len(items)),
             reply_markup=markup, html_mode=True, message_id=message_id,
         )
 
-    def show_history(self, chat_id: int, page: int, *, message_id: int | None = None) -> None:
-        if page == 0 or chat_id not in self.history_items:
+    def show_history(
+        self, chat_id: int, page: int, *, kind: str = "job", message_id: int | None = None
+    ) -> None:
+        history_items = self.freelance_history_items if kind == "freelance" else self.history_items
+        new_items = self.freelance_new_items if kind == "freelance" else self.new_items
+        prefix = "fhistory" if kind == "freelance" else "history"
+        new_prefix = "fnew" if kind == "freelance" else "new"
+        if page == 0 or chat_id not in history_items:
             try:
-                settings = self._search_settings()
+                settings = self._freelance_settings() if kind == "freelance" else self._job_settings()
             except ConfigError as exc:
                 self._show_card(chat_id, f"Не удалось прочитать фильтры: {exc}", message_id=message_id)
                 return
             with VacancyStore(self.config.database_path) as store:
                 all_items = store.recent_vacancies(store.count())
-            self.history_items[chat_id] = [
+            history_items[chat_id] = [
                 item for item in all_items if rejection_reason(item, settings) is None
             ]
-        matches = self.history_items[chat_id]
+        matches = history_items[chat_id]
         total = len(matches)
         if page >= total:
             self._show_card(
@@ -1518,17 +1678,17 @@ class JobTelegramBot:
         markup = self._reply_button(vacancy, profile) or {"inline_keyboard": []}
         arrows = []
         if page > 0:
-            arrows.append({"text": "←", "callback_data": f"history:{page - 1}"})
+            arrows.append({"text": "←", "callback_data": f"{prefix}:{page - 1}"})
         if page + 1 < total:
-            arrows.append({"text": "→", "callback_data": f"history:{page + 1}"})
+            arrows.append({"text": "→", "callback_data": f"{prefix}:{page + 1}"})
         if arrows:
             markup["inline_keyboard"].append(arrows)
-        if self.new_items.get(chat_id):
+        if new_items.get(chat_id):
             markup["inline_keyboard"].append(
-                [{"text": "✨ Новые", "callback_data": "new:0"}]
+                [{"text": "✨ Новые", "callback_data": f"{new_prefix}:0"}]
             )
         markup["inline_keyboard"].append(
-            [{"text": "🔎 Искать новые", "callback_data": "scan"}]
+            [{"text": "🔎 Искать новые", "callback_data": f"scan:{kind}"}]
         )
         self._show_card(
             chat_id, vacancy_message(vacancy, page + 1, total),

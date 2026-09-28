@@ -90,3 +90,4 @@ def test_freelancer_category_mode_requests_taxonomy_jobs():
     assert items[0].categories == ("software",)
     assert "query" not in session.params[0]
     assert 13 in session.params[0]["jobs[]"]
+    assert "Навыки: Python" in items[0].summary
