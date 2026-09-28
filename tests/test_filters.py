@@ -5,7 +5,7 @@ from job_search_automation.categories import (
     DEFAULT_STACK_SIGNALS,
     DEFAULT_TECH_TITLES,
 )
-from job_search_automation.config import SearchConfig
+from job_search_automation.config import SearchConfig, freelance_search_defaults
 from job_search_automation.filters import rejection_reason
 from job_search_automation.models import Vacancy
 
@@ -146,3 +146,21 @@ def test_default_focus_requires_a_real_stack_signal_not_just_fullstack_title():
         "title contains an excluded role"
     )
     assert rejection_reason(replace(base, title="Backend TypeScript Developer"), focused) is None
+
+
+def test_freelance_defaults_ignore_client_country_but_require_coding_signal():
+    focused = freelance_search_defaults(settings())
+    project = replace(
+        vacancy("REMOTE"), source="freelancer", kind="freelance",
+        title="Build a booking system", area="Brazil", location_scope="Brazil",
+        summary="Use Python and PostgreSQL", categories=("software",),
+    )
+    assert focused.sources == ("freelancer",)
+    assert focused.kinds == ("freelance",)
+    assert focused.area_ids == ()
+    assert focused.title_keywords == ()
+    assert rejection_reason(project, focused) is None
+    assert rejection_reason(replace(project, title="Write paid email copy", summary=""), focused) == (
+        "title and description do not mention the selected stack"
+    )
+    assert rejection_reason(replace(project, work_formats=("ON_SITE",)), focused) == "not remote"

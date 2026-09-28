@@ -26,7 +26,7 @@ class FreelancerClient:
         cutoff = datetime.now(UTC) - timedelta(days=settings.days)
         for query in ("",) if settings.categories else settings.queries:
             params: dict[str, object] = {
-                "limit": 100 if settings.title_keywords else min(settings.per_query, 100),
+                "limit": min(settings.per_query, 100),
                 "sort_field": "time_updated",
                 "sort_order": "desc",
             }
@@ -96,7 +96,14 @@ def vacancy_from_project(item: Any, query: str, cutoff: datetime) -> Vacancy | N
     country = location.get("country") if isinstance(location, dict) else None
     country_name = country.get("name") if isinstance(country, dict) else None
     area = str(country_name or "География не указана")
-    categories = freelancer_categories(item.get("jobs"))
+    jobs = item.get("jobs")
+    categories = freelancer_categories(jobs)
+    skill_names = [
+        _plain(job["name"]) for job in jobs
+        if isinstance(job, dict) and isinstance(job.get("name"), str)
+    ] if isinstance(jobs, list) else []
+    description = _plain(str(item.get("preview_description") or ""))
+    summary = f"{description}\nНавыки: {', '.join(skill_names)}" if skill_names else description
     return Vacancy(
         source="freelancer",
         source_id=str(project_id),
@@ -112,7 +119,7 @@ def vacancy_from_project(item: Any, query: str, cutoff: datetime) -> Vacancy | N
         salary_to=None,
         salary_currency=None,
         salary_gross=None,
-        summary=_plain(str(item.get("preview_description") or ""))[:1200],
+        summary=summary[:1200],
         query=query,
         kind="freelance",
         market="global",

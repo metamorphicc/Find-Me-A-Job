@@ -17,6 +17,14 @@ DEFAULT_STACK_SIGNALS = (
     "react", "next.js", "typescript", "node.js", "fastify", "python",
     "javascript",
 )
+FREELANCE_TECH_SIGNALS = (
+    "python", "javascript", "typescript", "react", "next.js", "node.js",
+    "fastify", "postgresql", "sql", "api", "backend", "frontend", "fullstack",
+    "web app", "website", "software", "programming", "coding", "script",
+    "automation", "automate", "integration", "chatbot", "telegram bot",
+    "ai", "llm", "agent", "machine learning", "artificial intelligence",
+    "разработ", "программ", "автоматизац", "интеграц", "агент", "бот",
+)
 DEFAULT_EXCLUDED_TITLES = (
     "qa", "tester", "testing", "тестировщик", "тестирование",
     "quality assurance", "инженер по качеству",

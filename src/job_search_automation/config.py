@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from dataclasses import dataclass as dc
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ from job_search_automation.categories import (
     DEFAULT_EXCLUDED_TITLES,
     DEFAULT_STACK_SIGNALS,
     DEFAULT_TECH_TITLES,
+    FREELANCE_TECH_SIGNALS,
     HH_ROLE_LABELS,
 )
 
@@ -99,6 +100,32 @@ def _bounded_int(value: Any, field: str, minimum: int, maximum: int) -> int:
 
 def search_settings_path(database_path: Path) -> Path:
     return database_path.parent / "search-settings.json"
+
+
+def freelance_settings_path(database_path: Path) -> Path:
+    return database_path.parent / "freelance-search-settings.json"
+
+
+def freelance_search_defaults(base: SearchConfig) -> SearchConfig:
+    """Keep order discovery independent from the saved vacancy filters."""
+    return replace(
+        base,
+        sources=("freelancer",),
+        kinds=("freelance",),
+        categories=("software",),
+        title_keywords=(),
+        stack_keywords=FREELANCE_TECH_SIGNALS,
+        area_ids=(),
+        role_ids=(),
+        employment_forms=(),
+        work_schedules=(),
+        salary_min=None,
+        salary_required=False,
+        remote_only=True,
+        strict_remote=True,
+        days=7,
+        per_query=100,
+    )
 
 
 def schedule_settings_path(database_path: Path) -> Path:

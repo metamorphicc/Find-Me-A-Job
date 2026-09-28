@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import re
+
 from job_search_automation.config import SearchConfig
 from job_search_automation.models import Vacancy
+
+
+def _term_in_text(term: str, text: str) -> bool:
+    if len(term) <= 3 and term.isalpha():
+        return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text, re.IGNORECASE) is not None
+    return term.casefold() in text.casefold()
 
 
 def rejection_reason(vacancy: Vacancy, config: SearchConfig) -> str | None:
@@ -30,7 +38,7 @@ def rejection_reason(vacancy: Vacancy, config: SearchConfig) -> str | None:
         return "title does not contain a required phrase"
     stack_text = f"{vacancy.title} {vacancy.summary}".casefold()
     if config.stack_keywords and not any(
-        keyword.casefold() in stack_text for keyword in config.stack_keywords
+        _term_in_text(keyword, stack_text) for keyword in config.stack_keywords
     ):
         return "title and description do not mention the selected stack"
     if config.remote_only and not vacancy.is_remote():
