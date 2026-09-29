@@ -7,6 +7,8 @@ __pycache__/
 
 # Local secrets and candidate data
 .env
+secrets/
+runtime/
 profile.json
 profile.json.tmp
 config.toml

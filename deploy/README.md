@@ -1,21 +1,49 @@
-# Always-on Telegram bot on a Linux VPS
+# Запуск Telegram-бота на VPS
 
-Run one bot instance per token. Stop the Windows bot before starting this service, or Telegram will reject one of the long-polling clients.
+Заготовка рассчитана на Linux-сервер с Docker Engine и Compose plugin. После первой настройки бот запускается одной командой, переживает перезагрузку сервера и хранит состояние в Docker volume. Открывать входящие порты для Telegram не нужно: бот использует long polling.
 
-1. Create an unprivileged `jobbot` user and put this repository at `/opt/find-me-a-job`, owned by that user. Do not commit or publish `config.toml`, `profile.json`, `.env`, résumés, the `data/` directory, or browser screenshots.
-2. As `jobbot`, create `.venv`, install the package, and install Chromium:
+## Первая настройка
+
+1. Установите [Docker Engine и Compose plugin](https://docs.docker.com/engine/install/) на сервере и скопируйте на него репозиторий с этой версией кода. Перейдите в корень проекта.
+2. Создайте локальные файлы, которые не попадают в Git и Docker-образ:
 
    ```bash
-   python3 -m venv .venv
-   .venv/bin/python -m pip install -e .
-   .venv/bin/python -m playwright install chromium
+   cp deploy/config.vps.example.toml config.toml
+   mkdir -p secrets resumes
+   chmod 700 secrets
+   nano secrets/telegram_bot_token
+   chmod 600 secrets/telegram_bot_token
+   nano config.toml
    ```
 
-   Install Chromium's Linux packages once as an administrator with `.venv/bin/python -m playwright install-deps chromium`. Playwright's [official browser guide](https://playwright.dev/python/docs/browsers) documents this command.
+   В файл `secrets/telegram_bot_token` вставьте **только токен** от BotFather. В `config.toml` замените `YOUR_EMAIL` на контакт для HH API и `123456789` на свой Telegram ID. Если ID неизвестен, сначала запустите бота с примером, отправьте ему `/id`, затем исправьте `allowed_user_ids` и перезапустите контейнер. Токен в `config.toml` не нужен.
 
-3. Copy `config.example.toml` to `config.toml` and set your search phrases, `telegram.allowed_user_ids`, and `[schedule]`. Fill `profile.json` only with facts you want to use in replies. Put `TELEGRAM_BOT_TOKEN=...` in an untracked `.env` file readable only by `jobbot` (`chmod 600 .env`). `SUPERJOB_APP_KEY=...` is optional.
-4. Copy `deploy/job-search-bot.service` to `/etc/systemd/system/`, then run `sudo systemctl daemon-reload` and `sudo systemctl enable --now job-search-bot`. Check `sudo systemctl status job-search-bot` and `sudo journalctl -u job-search-bot -f`.
+3. До постоянного запуска проверьте конфигурацию и Chromium:
 
-The service restarts after failures and starts after reboot. Scheduled searches run at the configured IANA time zone while the service is active. The bot also lets you change the time and toggle daily search in **Настройки → Ежедневный поиск**; those edits are stored under ignored `data/` and do not need a restart.
+   ```bash
+   docker compose build
+   docker compose run --rm bot job-search --config /app/config.toml doctor
+   ```
 
-With `JOB_SEARCH_HEADLESS=1`, prepared applications open in a headless browser. The bot sends a screenshot to your private chat before showing the submit button. Unknown required fields cannot be corrected in that hidden browser. Add the missing fact or a template field value, prepare the form again, and review the new screenshot; or stop the VPS bot and use the visible local bot for manual corrections. A failed screenshot upload blocks the submit button. OTP, CAPTCHA, login flows, and custom widgets remain manual.
+4. Остановите локальный Windows-бот с тем же токеном и запустите серверного:
+
+   ```bash
+   docker compose up -d
+   docker compose ps
+   docker compose logs --tail=50 bot
+   ```
+
+Далее обычный запуск после настройки — `docker compose up -d`. После обновления кода — `git pull` и `docker compose up -d --build`. Для остановки — `docker compose down`; база, профиль, шаблоны, состояние расписания и снимки форм остаются в volume `runtime`.
+
+## Где находятся данные
+
+- `config.toml` на сервере монтируется только для чтения. Изменили токен или конфигурацию — выполните `docker compose up -d --force-recreate`.
+- `secrets/telegram_bot_token` монтируется как Docker Compose secret. Не отправляйте этот файл в Git и не показывайте его в логах или скриншотах.
+- Docker volume `runtime` хранит SQLite, сохранённые фильтры, профиль, шаблоны, расписание, отчёты и снимки форм. Изменения профиля и фильтров через Telegram сохраняются там и не требуют пересборки.
+- Если нужно приложить резюме к поддерживаемой форме, положите PDF/DOC/DOCX на сервер в `resumes/`, например `resumes/cv.pdf`. В поле профиля `resume_path` укажите `resumes/cv.pdf`. Эта папка видна контейнеру только для чтения.
+
+Команда `docker compose logs -f --tail=50 bot` показывает ошибки и ход работы. Если Telegram сообщает о конфликте long polling, проверьте, что с тем же токеном не запущен другой экземпляр бота. Серверная среда работает без видимого окна Chromium: перед отправкой поддерживаемой анкеты бот присылает снимок заполненной формы. Неизвестные поля, CAPTCHA, OTP и вход в аккаунт остаются ручными.
+
+Ежедневное расписание сейчас запускает **поиск вакансий**. Поиск заказов запускается кнопкой в Telegram; постоянная работа контейнера сама по себе не добавляет ежедневный поиск заказов.
+
+Альтернативный запуск без Docker через `deploy/job-search-bot.service` остаётся возможным, но для него нужно вручную подготовить Python, Chromium и systemd-службу.
