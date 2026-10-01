@@ -68,6 +68,9 @@ def test_public_projects_use_skill_filter_and_keep_client_country():
     assert items[0].kind == "freelance"
     assert items[0].location_scope == "Ukraine"
     assert items[0].pay_label == "12000 UAH"
+    assert (items[0].budget_max, items[0].budget_currency, items[0].budget_unit) == (
+        12000.0, "UAH", "project"
+    )
     assert items[0].url == "https://freelancehunt.com/project/bot/1655813.html"
     assert rejection_reason(items[0], settings()) is None
     assert session.calls[0][1]["params"]["filter[skill_id]"]

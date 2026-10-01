@@ -428,6 +428,29 @@ def test_bot_edits_precise_search_filters(tmp_path) -> None:
     assert saved.salary_required is True
 
 
+def test_bot_edits_freelance_budget_without_changing_job_salary(tmp_path) -> None:
+    bot = JobTelegramBot(config(tmp_path), FakeApi())
+    bot.handle_update(callback("edit:freelance:budget_min"))
+    bot.handle_update(message("500"))
+    bot.handle_update(callback("fset:budget_currency:EUR"))
+    assert bot._freelance_settings().budget_min == 500
+    assert bot._freelance_settings().budget_currency == "EUR"
+    assert bot._search_settings().salary_min is None
+    bot.handle_update(callback("edit:freelance:budget_min"))
+    bot.handle_update(message("-"))
+    assert bot._freelance_settings().budget_min is None
+
+
+def test_freelance_schedule_is_separate_from_job_schedule(tmp_path) -> None:
+    bot = JobTelegramBot(config(tmp_path), FakeApi())
+    bot.handle_update(callback("toggle:freelance_schedule"))
+    bot.handle_update(callback("edit:freelance_schedule:time"))
+    bot.handle_update(message("10:30"))
+    assert bot._schedule_settings("freelance").enabled
+    assert bot._schedule_settings("freelance").time == "10:30"
+    assert not bot._schedule_settings("job").enabled
+
+
 def test_settings_back_returns_to_main_menu(tmp_path) -> None:
     api = FakeApi()
     bot = JobTelegramBot(config(tmp_path), api)

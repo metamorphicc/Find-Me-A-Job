@@ -75,6 +75,15 @@ def rejection_reason(vacancy: Vacancy, config: SearchConfig) -> str | None:
             return "salary currency differs"
         if config.salary_min is not None and (vacancy.salary_to or vacancy.salary_from or 0) < config.salary_min:
             return "salary below minimum"
+    if vacancy.kind == "freelance" and config.budget_min is not None:
+        if vacancy.budget_max is None:
+            return "project budget not specified"
+        if vacancy.budget_unit != "project":
+            return "hourly rate is not a project budget"
+        if vacancy.budget_currency != config.budget_currency:
+            return "project budget currency differs"
+        if vacancy.budget_max < config.budget_min:
+            return "project budget below minimum"
 
     searchable = f"{vacancy.title} {vacancy.company} {vacancy.summary}".casefold()
     for keyword in config.excluded_keywords:

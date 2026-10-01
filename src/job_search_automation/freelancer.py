@@ -94,11 +94,17 @@ def vacancy_from_project(item: Any, query: str, cutoff: datetime) -> Vacancy | N
     budget = item.get("budget")
     currency = item.get("currency")
     amount = "Не указан"
+    budget_max = None
+    budget_currency = None
+    budget_unit = None
     if isinstance(budget, dict):
         low, high = budget.get("minimum"), budget.get("maximum")
         code = currency.get("code") if isinstance(currency, dict) else None
         if isinstance(low, (int, float)) and isinstance(high, (int, float)):
             amount = f"{low:g}–{high:g} {code or ''}".strip()
+            budget_max = float(high)
+            budget_currency = code if isinstance(code, str) else None
+            budget_unit = "hour" if item.get("type") == "hourly" else "project"
     location = item.get("location")
     country = location.get("country") if isinstance(location, dict) else None
     country_name = country.get("name") if isinstance(country, dict) else None
@@ -133,4 +139,7 @@ def vacancy_from_project(item: Any, query: str, cutoff: datetime) -> Vacancy | N
         location_scope=area,
         pay_label=amount,
         categories=categories,
+        budget_max=budget_max,
+        budget_currency=budget_currency,
+        budget_unit=budget_unit,
     )

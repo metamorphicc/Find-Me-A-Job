@@ -110,8 +110,12 @@ def vacancy_from_project(item: Any, cutoff: datetime) -> Vacancy | None:
         return None
     budget = attributes.get("budget")
     amount = "Не указан"
+    budget_max = None
+    budget_currency = None
     if isinstance(budget, dict) and isinstance(budget.get("amount"), (int, float)):
         amount = f"{budget['amount']:g} {budget.get('currency') or ''}".strip()
+        budget_max = float(budget["amount"])
+        budget_currency = budget.get("currency") if isinstance(budget.get("currency"), str) else None
     location = attributes.get("location")
     country = location.get("country") if isinstance(location, dict) else None
     area = _plain(str(country.get("name") or "")) if isinstance(country, dict) else ""
@@ -139,4 +143,7 @@ def vacancy_from_project(item: Any, cutoff: datetime) -> Vacancy | None:
         location_scope=area,
         pay_label=amount,
         categories=("software",),
+        budget_max=budget_max,
+        budget_currency=budget_currency,
+        budget_unit="project" if budget_max is not None else None,
     )

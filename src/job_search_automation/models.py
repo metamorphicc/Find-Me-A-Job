@@ -29,6 +29,9 @@ class Vacancy:
     pay_label: str = ""
     categories: tuple[str, ...] = ()
     professional_role_ids: tuple[str, ...] = ()
+    budget_max: float | None = None
+    budget_currency: str | None = None
+    budget_unit: str | None = None
 
     def is_remote(self) -> bool:
         return "REMOTE" in self.work_formats

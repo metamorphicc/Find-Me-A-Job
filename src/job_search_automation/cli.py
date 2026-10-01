@@ -57,6 +57,7 @@ def _scan(config_path: Path, *, open_report: bool) -> int:
                         "name": source.name,
                         "fetched": source.fetched,
                         "accepted": source.accepted,
+                        "shown": source.shown,
                         "rejected": dict(source.rejected),
                         "pages": source.pages,
                         "truncated": source.truncated,

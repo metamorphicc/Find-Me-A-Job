@@ -52,6 +52,8 @@ class SearchConfig:
     salary_min: int | None = None
     salary_currency: str = "RUR"
     salary_required: bool = False
+    budget_min: int | None = None
+    budget_currency: str = "USD"
 
 
 @dc(frozen=True, slots=True)
@@ -127,6 +129,8 @@ def freelance_search_defaults(base: SearchConfig) -> SearchConfig:
         work_schedules=(),
         salary_min=None,
         salary_required=False,
+        budget_min=None,
+        budget_currency="USD",
         remote_only=True,
         strict_remote=True,
         days=7,
@@ -136,6 +140,10 @@ def freelance_search_defaults(base: SearchConfig) -> SearchConfig:
 
 def schedule_settings_path(database_path: Path) -> Path:
     return database_path.parent / "schedule-settings.json"
+
+
+def freelance_schedule_settings_path(database_path: Path) -> Path:
+    return database_path.parent / "freelance-schedule-settings.json"
 
 
 def validate_schedule(enabled: bool, time: str, timezone: str) -> ScheduleConfig:
@@ -211,6 +219,14 @@ def _validate_search(search: SearchConfig) -> SearchConfig:
         raise ConfigError("search.salary_currency must be RUR, USD or EUR")
     if not isinstance(search.salary_required, bool):
         raise ConfigError("search.salary_required must be true or false")
+    if search.budget_min is not None and (
+        not isinstance(search.budget_min, int)
+        or isinstance(search.budget_min, bool)
+        or search.budget_min < 0
+    ):
+        raise ConfigError("search.budget_min must be a nonnegative integer")
+    if search.budget_currency not in {"RUR", "USD", "EUR", "UAH"}:
+        raise ConfigError("search.budget_currency must be RUR, USD, EUR or UAH")
     return search
 
 
@@ -252,6 +268,8 @@ def load_search_settings(base: SearchConfig, path: Path) -> SearchConfig:
         salary_min=raw.get("salary_min", base.salary_min),
         salary_currency=raw.get("salary_currency", base.salary_currency),
         salary_required=raw.get("salary_required", base.salary_required),
+        budget_min=raw.get("budget_min", base.budget_min),
+        budget_currency=raw.get("budget_currency", base.budget_currency),
     ))
 
 
@@ -342,6 +360,8 @@ def load_config(path: str | Path) -> AppConfig:
         salary_min=search_raw.get("salary_min"),
         salary_currency=str(search_raw.get("salary_currency", "RUR")),
         salary_required=search_raw.get("salary_required", False),
+        budget_min=search_raw.get("budget_min"),
+        budget_currency=str(search_raw.get("budget_currency", "USD")),
     )
     _validate_search(search)
     schedule = validate_schedule(

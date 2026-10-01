@@ -62,6 +62,9 @@ def test_freelancer_maps_public_project_and_safe_link():
     assert items[0].kind == "freelance"
     assert items[0].is_remote()
     assert items[0].pay_label == "100–500 EUR"
+    assert (items[0].budget_max, items[0].budget_currency, items[0].budget_unit) == (
+        500.0, "EUR", "project"
+    )
     assert items[0].location_scope == "Germany"
     assert items[0].url == "https://www.freelancer.com/projects/python/Build-Python-Service/details"
 
