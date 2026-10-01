@@ -1,10 +1,11 @@
 import json
 import sqlite3
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 
-from job_search_automation.config import load_config
+from job_search_automation.config import freelance_search_defaults, load_config
 from job_search_automation.models import Vacancy
 from job_search_automation.search import SearchError, scan_with_providers
 from job_search_automation.storage import VacancyStore
@@ -59,6 +60,75 @@ def test_scan_keeps_successful_sources_when_one_fails(tmp_path):
     assert [item.source for item in first.new_items] == ["remote"]
     assert second.new_items == []
     assert first.errors == ("hh: offline",)
+    assert first.source_stats[0].name == "remote"
+    assert first.source_stats[0].accepted == 1
+
+
+def test_scan_counts_rejection_reasons_by_source(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[search]\nqueries = ["Python"]\n', encoding="utf-8")
+    config = load_config(config_path)
+    config = replace(config, search=replace(config.search, sources=("hh",), categories=()))
+    irrelevant = replace(vacancy("hh"), source_id="2", title="QA tester")
+    result = scan_with_providers(config, {"hh": Provider([vacancy("hh"), irrelevant])})
+    assert result.source_stats[0].fetched == 2
+    assert result.source_stats[0].accepted == 1
+    assert result.source_stats[0].rejected == (("title contains an excluded role", 1),)
+
+
+def test_scan_limits_displayed_matches_after_filtering(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[search]\nqueries = ["Python"]\n', encoding="utf-8")
+    config = load_config(config_path)
+    config = replace(config, search=replace(
+        config.search, sources=("hh",), categories=(), per_query=1,
+    ))
+    first = vacancy("hh")
+    second = replace(first, source_id="2")
+    irrelevant = replace(first, source_id="3", title="QA tester")
+    result = scan_with_providers(config, {"hh": Provider([irrelevant, first, second])})
+    assert result.fetched_count == 3
+    assert result.accepted_count == 2
+    assert [item.source_id for item in result.new_items] == ["1"]
+    assert result.source_stats[0].shown == 1
+
+
+def test_technical_borderline_projects_are_saved_for_review(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[search]\nqueries = ["Python"]\n', encoding="utf-8")
+    config = load_config(config_path)
+    settings = replace(freelance_search_defaults(config.search), sources=("freelancer",))
+    config = replace(config, search=settings)
+    candidate = replace(
+        vacancy("freelancer"), title="Build CRM", company="Freelancer client",
+        kind="freelance", market="global", categories=("software",),
+        summary="Create an internal sales tool", published_at=datetime.now(UTC).isoformat(),
+    )
+    unrelated = replace(candidate, source_id="2", title="QA tester")
+    provider = Provider([candidate, unrelated])
+
+    result = scan_with_providers(config, {"freelancer": provider})
+    assert result.new_items == []
+    assert [item.source_id for item, _ in result.review_items] == ["1"]
+    with VacancyStore(config.database_path) as store:
+        assert [item.source_id for item, _ in store.review_candidates()] == ["1"]
+        assert store.rate_review_candidate("freelancer", "1", relevant=True)
+        assert store.recent_vacancies()[0].title == "Build CRM"
+        assert not store.rate_review_candidate("freelancer", "1", relevant=False)
+
+    scan_with_providers(config, {"freelancer": provider})
+    with VacancyStore(config.database_path) as store:
+        assert store.review_candidates() == []
+
+    underpaid = replace(
+        candidate, source_id="3", budget_max=100, budget_currency="USD",
+        budget_unit="project",
+    )
+    budget_config = replace(config, search=replace(settings, budget_min=500))
+    budget_result = scan_with_providers(
+        budget_config, {"freelancer": Provider([underpaid])}
+    )
+    assert budget_result.review_items == []
 
 
 def test_scan_reports_all_failed_sources(tmp_path):

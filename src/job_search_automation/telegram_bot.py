@@ -7,6 +7,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,9 @@ from job_search_automation.categories import CATEGORY_LABELS, HH_ROLE_LABELS
 from job_search_automation.config import (
     AppConfig,
     ConfigError,
+    ScheduleConfig,
     SearchConfig,
+    freelance_schedule_settings_path,
     freelance_search_defaults,
     freelance_settings_path,
     load_schedule_settings,
@@ -57,7 +60,7 @@ from job_search_automation.reply_templates import (
 )
 from job_search_automation.reporting import _salary
 from job_search_automation.scheduling import DailyScheduler
-from job_search_automation.search import ScanResult, SearchError, scan_vacancies
+from job_search_automation.search import ScanResult, SearchError, SourceStats, scan_vacancies
 from job_search_automation.storage import ApplicationStateError, VacancyStore
 from job_search_automation.tilda_apply import FillError
 
@@ -106,6 +109,41 @@ SOURCE_LABELS = {
     "freelancer": "Freelancer.com",
     "freelancehunt": "Freelancehunt",
 }
+
+REJECTION_LABELS = {
+    "opportunity kind disabled": "другой тип",
+    "outside selected professional categories": "другая категория",
+    "outside selected HH roles": "другая роль",
+    "title contains an excluded role": "исключённая роль",
+    "title does not contain a required phrase": "неподходящее название",
+    "title and description do not mention the selected stack": "не найдена тема/технология",
+    "not remote": "не удалённо",
+    "also offers office, hybrid, or field work": "есть офисный формат",
+    "salary not specified": "нет зарплаты",
+    "salary currency differs": "другая валюта",
+    "salary below minimum": "ниже порога оплаты",
+    "project budget not specified": "бюджет не указан",
+    "hourly rate is not a project budget": "почасовая ставка",
+    "project budget currency differs": "другая валюта бюджета",
+    "project budget below minimum": "бюджет ниже порога",
+}
+
+
+def _source_summary(stats: tuple[SourceStats, ...]) -> str:
+    lines = ["📊 Результаты по источникам:"]
+    for source in stats:
+        details = ", ".join(
+            f"{REJECTION_LABELS.get(reason, reason)}: {count}"
+            for reason, count in source.rejected[:2]
+        )
+        coverage = " · достигнут предел страниц" if source.truncated else ""
+        lines.append(
+            f"{SOURCE_LABELS.get(source.name, source.name)}: {source.fetched} найдено, "
+            f"{source.accepted} подошло ({source.pages} стр.){coverage}"
+            + (f", показано {source.shown}" if source.shown < source.accepted else "")
+            + (f"\n  Отсеяно: {details}" if details else "")
+        )
+    return "\n".join(lines)
 
 PROFILE_SECTIONS = {
     "basic": ("🪪 Основное", ("name", "about", "contact", "email", "phone", "city")),
@@ -342,17 +380,22 @@ class JobTelegramBot:
             "Страна заказчика не ограничивает поиск; возможность отклика уточняйте на площадке."
             if kind == "freelance" else "Фильтры вакансий не влияют на поиск заказов."
         )
+        buttons = [
+            [{"text": f"🔎 Искать {label}", "callback_data": f"scan:{kind}"}],
+            [{"text": "📚 Ранее найденные", "callback_data":
+              "fhistory:0" if kind == "freelance" else "history:0"}],
+        ]
+        if kind == "freelance":
+            buttons.append([{"text": "🟡 Возможно подходят", "callback_data": "fcandidates:0"}])
+        buttons.extend([
+            [{"text": "⚙️ Фильтры заказов" if kind == "freelance" else "⚙️ Фильтры вакансий",
+              "callback_data": "settings:freelance" if kind == "freelance" else "settings:search"}],
+            [{"text": "← Главное меню", "callback_data": "menu:main"}],
+        ])
         self.api.send_message(
             chat_id, f"{'🧩' if kind == 'freelance' else '💼'} Поиск: {label}\n"
             f"Источники: {sources}.\n{note}",
-            reply_markup={"inline_keyboard": [
-                [{"text": f"🔎 Искать {label}", "callback_data": f"scan:{kind}"}],
-                [{"text": "📚 Ранее найденные", "callback_data":
-                  "fhistory:0" if kind == "freelance" else "history:0"}],
-                [{"text": "⚙️ Фильтры заказов" if kind == "freelance" else "⚙️ Фильтры вакансий",
-                  "callback_data": "settings:freelance" if kind == "freelance" else "settings:search"}],
-                [{"text": "← Главное меню", "callback_data": "menu:main"}],
-            ]},
+            reply_markup={"inline_keyboard": buttons},
         )
 
     def show_freelance_settings(self, chat_id: int) -> None:
@@ -369,12 +412,15 @@ class JobTelegramBot:
             f"Темы и технологии: {', '.join(settings.stack_keywords) or 'не заданы'}\n"
             f"Исключить слова: {', '.join(settings.excluded_keywords) or 'нет'}\n"
             f"Опубликовано за: {settings.days} дн. · Лимит: {settings.per_query}\n"
+            f"Бюджет проекта: "
+            f"{'от ' + str(settings.budget_min) + ' ' + settings.budget_currency if settings.budget_min is not None else 'любой'}\n"
             f"Источники: {', '.join(SOURCE_LABELS[source] for source in settings.sources)}. "
             "FL.ru RSS пока отвечает нестабильно и не включён.",
             reply_markup={"inline_keyboard": [
                 [{"text": "Источники заказов", "callback_data": "choose:freelance_sources"}],
                 [{"text": "Темы и технологии", "callback_data": "edit:freelance:stack_keywords"}],
                 [{"text": "Исключить слова", "callback_data": "edit:freelance:excluded_keywords"}],
+                [{"text": "Бюджет проекта", "callback_data": "choose:freelance_budget"}],
                 [{"text": "Давность", "callback_data": "choose:freelance_days"},
                  {"text": "Лимит", "callback_data": "choose:freelance_limit"}],
                 [{"text": "← К поиску заказов", "callback_data": "menu:freelance"}],
@@ -389,6 +435,7 @@ class JobTelegramBot:
             reply_markup={
                 "inline_keyboard": [
                     [{"text": "⏰ Ежедневный поиск вакансий", "callback_data": "settings:schedule"}],
+                    [{"text": "⏰ Ежедневный поиск заказов", "callback_data": "settings:freelance_schedule"}],
                     [{"text": "✉️ Шаблоны отклика", "callback_data": "templates"}],
                     [{"text": "← Назад", "callback_data": "menu:main"}],
                 ]
@@ -603,20 +650,25 @@ class JobTelegramBot:
             reply_markup={"inline_keyboard": buttons},
         )
 
-    def _schedule_settings(self):
+    def _schedule_settings(self, kind: str = "job"):
+        base = (self.config.schedule if kind == "job" else
+                ScheduleConfig(False, self.config.schedule.time, self.config.schedule.timezone))
+        path = (schedule_settings_path(self.config.database_path) if kind == "job" else
+                freelance_schedule_settings_path(self.config.database_path))
         return load_schedule_settings(
-            self.config.schedule, schedule_settings_path(self.config.database_path)
+            base, path
         )
 
-    def show_schedule_settings(self, chat_id: int) -> None:
+    def show_schedule_settings(self, chat_id: int, kind: str = "job") -> None:
         try:
-            schedule = self._schedule_settings()
+            schedule = self._schedule_settings(kind)
         except ConfigError as exc:
             self.api.send_message(chat_id, f"Не удалось прочитать расписание: {exc}")
             return
         self.api.send_message(
             chat_id,
-            f"Ежедневный поиск вакансий: {'включён' if schedule.enabled else 'выключен'}\n"
+            f"Ежедневный поиск {'заказов' if kind == 'freelance' else 'вакансий'}: "
+            f"{'включён' if schedule.enabled else 'выключен'}\n"
             f"Время: {schedule.time} ({schedule.timezone})\n"
             "Бот должен работать на включённом компьютере или сервере.",
             reply_markup={
@@ -624,11 +676,13 @@ class JobTelegramBot:
                     [
                         {
                             "text": "Выключить" if schedule.enabled else "Включить",
-                            "callback_data": "toggle:schedule",
+                            "callback_data": "toggle:freelance_schedule" if kind == "freelance" else "toggle:schedule",
                         }
                     ],
-                    [{"text": "Время", "callback_data": "edit:schedule:time"}],
-                    [{"text": "Часовой пояс", "callback_data": "edit:schedule:timezone"}],
+                    [{"text": "Время", "callback_data":
+                      "edit:freelance_schedule:time" if kind == "freelance" else "edit:schedule:time"}],
+                    [{"text": "Часовой пояс", "callback_data":
+                      "edit:freelance_schedule:timezone" if kind == "freelance" else "edit:schedule:timezone"}],
                     [{"text": "← Настройки", "callback_data": "settings"}],
                 ]
             },
@@ -661,7 +715,7 @@ class JobTelegramBot:
                     else " Формат: название поля = значение. Для удаления: название поля = -."
                 )
             )
-        elif kind == "schedule" and field in {"time", "timezone"}:
+        elif kind in {"schedule", "freelance_schedule"} and field in {"time", "timezone"}:
             label = "время HH:MM" if field == "time" else "часовой пояс IANA"
             extra = " Например, 09:00." if field == "time" else " Например, Asia/Novosibirsk."
         elif kind == "fact" and field == "new":
@@ -677,9 +731,15 @@ class JobTelegramBot:
                 if field not in {"name", "about", "contact"}
                 else ""
             )
-        elif kind == "freelance" and field in {"stack_keywords", "excluded_keywords"}:
-            label = "Темы и технологии заказов" if field == "stack_keywords" else "Исключаемые слова"
-            extra = " Перечислите через запятую или с новой строки."
+        elif kind == "freelance" and field in {"stack_keywords", "excluded_keywords", "budget_min"}:
+            label = {
+                "stack_keywords": "Темы и технологии заказов",
+                "excluded_keywords": "Исключаемые слова",
+                "budget_min": "Минимальный бюджет проекта числом",
+            }[field]
+            extra = (" Укажите '-' для отключения фильтра. Почасовые ставки не сравниваются."
+                     if field == "budget_min" else
+                     " Перечислите через запятую или с новой строки.")
             if field == "excluded_keywords":
                 extra += " Отправьте '-' для очистки."
         elif kind == "search" and field in {
@@ -720,17 +780,27 @@ class JobTelegramBot:
                 if not separator:
                     raise ProfileError("Отправьте «Название поля = значение»")
                 save_custom_fact(self.config.profile_path, name, value)
-            elif kind == "schedule":
-                current = self._schedule_settings()
+            elif kind in {"schedule", "freelance_schedule"}:
+                schedule_kind = "freelance" if kind == "freelance_schedule" else "job"
+                current = self._schedule_settings(schedule_kind)
                 updated = validate_schedule(
                     current.enabled,
                     text.strip() if field == "time" else current.time,
                     text.strip() if field == "timezone" else current.timezone,
                 )
                 save_schedule_settings(
-                    updated, schedule_settings_path(self.config.database_path)
+                    updated,
+                    freelance_schedule_settings_path(self.config.database_path)
+                    if schedule_kind == "freelance" else schedule_settings_path(self.config.database_path),
                 )
             else:
+                if kind == "freelance" and field == "budget_min":
+                    value = None if text.strip() == "-" else int(text.strip())
+                    self._save_freelance_settings(budget_min=value)
+                    del self.pending_edits[chat_id]
+                    self.api.send_message(chat_id, "Сохранено.")
+                    self.show_freelance_settings(chat_id)
+                    return
                 if field == "salary_min":
                     value = None if text.strip() == "-" else int(text.strip())
                     self._save_search_settings(salary_min=value)
@@ -771,6 +841,8 @@ class JobTelegramBot:
             self.show_profile_section(chat_id, "facts")
         elif kind == "schedule":
             self.show_schedule_settings(chat_id)
+        elif kind == "freelance_schedule":
+            self.show_schedule_settings(chat_id, "freelance")
         elif kind == "freelance":
             self.show_freelance_settings(chat_id)
         else:
@@ -803,6 +875,14 @@ class JobTelegramBot:
                 [{"text": f"{value} дн." if field == "days" else str(value),
                   "callback_data": f"fset:{field}:{value}"}]
                 for value in values
+            ]
+        elif choice == "freelance_budget":
+            settings = self._freelance_settings()
+            buttons = [
+                [{"text": "Минимальная сумма", "callback_data": "edit:freelance:budget_min"}],
+                *[[{"text": f"{'✓' if settings.budget_currency == code else '○'} {code}",
+                    "callback_data": f"fset:budget_currency:{code}"}]
+                  for code in ("RUR", "USD", "EUR", "UAH")],
             ]
         elif choice == "kinds":
             settings = self._search_settings()
@@ -914,6 +994,10 @@ class JobTelegramBot:
                 return
             if action.startswith("fset:"):
                 _, field, raw_value = action.split(":", 2)
+                if field == "budget_currency" and raw_value in {"RUR", "USD", "EUR", "UAH"}:
+                    self._save_freelance_settings(budget_currency=raw_value)
+                    self.show_freelance_settings(chat_id)
+                    return
                 value = int(raw_value)
                 if field == "days" and value in {3, 7, 14, 30}:
                     self._save_freelance_settings(days=value)
@@ -937,6 +1021,16 @@ class JobTelegramBot:
                 )
                 save_schedule_settings(updated, schedule_settings_path(self.config.database_path))
                 self.show_schedule_settings(chat_id)
+                return
+            elif action == "toggle:freelance_schedule":
+                current = self._schedule_settings("freelance")
+                updated = validate_schedule(
+                    not current.enabled, current.time, current.timezone
+                )
+                save_schedule_settings(
+                    updated, freelance_schedule_settings_path(self.config.database_path)
+                )
+                self.show_schedule_settings(chat_id, "freelance")
                 return
             elif action.startswith("toggle:source:"):
                 source = action.removeprefix("toggle:source:")
@@ -1226,6 +1320,22 @@ class JobTelegramBot:
             elif action.startswith("fhistory:") and action[9:].isdigit() and len(action) <= 15:
                 self.profile_setup.discard(chat_id)
                 self.show_history(chat_id, int(action[9:]), kind="freelance", message_id=message_id)
+            elif action.startswith("fcandidates:") and action[12:].isdigit() and len(action) <= 18:
+                self.show_review_candidates(chat_id, int(action[12:]), message_id=message_id)
+            elif action.startswith("fvote:"):
+                parts = action.split(":")
+                if len(parts) == 4 and parts[1] in {"yes", "no"} and _callback_ref(parts[2], parts[3]):
+                    with VacancyStore(self.config.database_path) as store:
+                        updated = store.rate_review_candidate(
+                            parts[2], parts[3], parts[1] == "yes"
+                        )
+                    if updated:
+                        self.api.send_message(
+                            chat_id,
+                            "Добавил заказ в историю — там доступен шаблон отклика."
+                            if parts[1] == "yes" else "Убрал заказ из очереди.",
+                        )
+                        self.show_review_candidates(chat_id, 0, message_id=message_id)
             elif action == "menu:main":
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
@@ -1252,6 +1362,10 @@ class JobTelegramBot:
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
                 self.show_schedule_settings(chat_id)
+            elif action == "settings:freelance_schedule":
+                self.pending_edits.pop(chat_id, None)
+                self.profile_setup.discard(chat_id)
+                self.show_schedule_settings(chat_id, "freelance")
             elif action in {"settings:profile", "profile:home"}:
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
@@ -1352,6 +1466,11 @@ class JobTelegramBot:
         history_items.pop(chat_id, None)
         if result.errors:
             self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
+        if result.source_stats:
+            summary = _source_summary(result.source_stats)
+            if kind == "freelance" and result.review_items:
+                summary += f"\n🟡 На ручную проверку: {len(result.review_items)}"
+            self.api.send_message(chat_id, summary)
         if not result.new_items:
             self._show_card(
                 chat_id,
@@ -1361,7 +1480,9 @@ class JobTelegramBot:
                 reply_markup={
                     "inline_keyboard": [
                         [{"text": "📚 Посмотреть найденные", "callback_data":
-                          "fhistory:0" if kind == "freelance" else "history:0"}]
+                          "fhistory:0" if kind == "freelance" else "history:0"}],
+                        *([[{"text": "🟡 Возможно подходят", "callback_data": "fcandidates:0"}]]
+                          if kind == "freelance" else []),
                     ]
                 },
                 message_id=progress_id,
@@ -1680,9 +1801,66 @@ class JobTelegramBot:
         markup["inline_keyboard"].append(
             [{"text": "📚 Ранее найденные", "callback_data": f"{history_prefix}:0"}]
         )
+        if kind == "freelance":
+            markup["inline_keyboard"].append(
+                [{"text": "🟡 Возможно подходят", "callback_data": "fcandidates:0"}]
+            )
         self._show_card(
             chat_id, vacancy_message(vacancy, page + 1, len(items)),
             reply_markup=markup, html_mode=True, message_id=message_id,
+        )
+
+    def show_review_candidates(
+        self, chat_id: int, page: int, *, message_id: int | None = None
+    ) -> None:
+        try:
+            settings = self._freelance_settings()
+        except ConfigError as exc:
+            self._show_card(chat_id, f"Не удалось прочитать фильтры: {exc}", message_id=message_id)
+            return
+        cutoff = datetime.now(UTC) - timedelta(days=settings.days)
+        with VacancyStore(self.config.database_path) as store:
+            stored = store.review_candidates(200)
+        candidates = []
+        for item, reason in stored:
+            if item.source not in settings.sources:
+                continue
+            try:
+                published = datetime.fromisoformat(item.published_at)
+            except ValueError:
+                continue
+            if published.tzinfo is None or published < cutoff:
+                continue
+            candidates.append((item, reason))
+        if not candidates:
+            self._show_card(
+                chat_id,
+                "Пограничных заказов пока нет. Запустите поиск заказов.",
+                reply_markup={"inline_keyboard": [[
+                    {"text": "← К заказам", "callback_data": "menu:freelance"}
+                ]]},
+                message_id=message_id,
+            )
+            return
+        page = min(page, len(candidates) - 1)
+        item, _ = candidates[page]
+        buttons = [
+            [{"text": "👍 Подходит", "callback_data": f"fvote:yes:{item.source}:{item.source_id}"},
+             {"text": "👎 Мимо", "callback_data": f"fvote:no:{item.source}:{item.source_id}"}],
+        ]
+        arrows = []
+        if page > 0:
+            arrows.append({"text": "←", "callback_data": f"fcandidates:{page - 1}"})
+        if page + 1 < len(candidates):
+            arrows.append({"text": "→", "callback_data": f"fcandidates:{page + 1}"})
+        if arrows:
+            buttons.append(arrows)
+        buttons.append([{"text": "← К заказам", "callback_data": "menu:freelance"}])
+        self._show_card(
+            chat_id,
+            vacancy_message(item, page + 1, len(candidates))
+            + "\n\n🟡 Тема из фильтра не найдена, но название похоже на задачу по разработке.",
+            reply_markup={"inline_keyboard": buttons}, html_mode=True, message_id=message_id,
         )
 
     def show_history(
@@ -1753,6 +1931,31 @@ def _save_offset(path: Path, offset: int) -> None:
     os.replace(temporary, path)
 
 
+def _run_due_scan(
+    bot: JobTelegramBot,
+    scheduler: DailyScheduler,
+    kind: str,
+    user_ids: tuple[int, ...],
+    due_day: str | None,
+    retry_at: float,
+    now: float,
+) -> float:
+    if not due_day or not user_ids or now < retry_at:
+        return retry_at
+    owner, *others = user_ids
+    try:
+        result = bot.scan(owner, kind=kind)
+        if result is None:
+            return now + 15 * 60
+        scheduler.mark(due_day)
+        for user_id in others:
+            bot.scan(user_id, result=result, kind=kind)
+    except (TelegramApiError, OSError, ValueError) as exc:
+        print(f"Ежедневный поиск {kind} не удался: {exc}", flush=True)
+        return now + 15 * 60
+    return 0.0
+
+
 def run_bot(config: AppConfig) -> None:
     if not config.telegram.bot_token:
         raise ConfigError("Укажите telegram.bot_token в config.toml или TELEGRAM_BOT_TOKEN")
@@ -1760,6 +1963,11 @@ def run_bot(config: AppConfig) -> None:
     bot = JobTelegramBot(config, api)
     offset_path = config.database_path.parent / "telegram-offset.json"
     scheduler = DailyScheduler(config.schedule, config.database_path.parent / "schedule-state.json")
+    freelance_scheduler = DailyScheduler(
+        ScheduleConfig(False, config.schedule.time, config.schedule.timezone),
+        config.database_path.parent / "freelance-schedule-state.json",
+    )
+    retry_at = {"job": 0.0, "freelance": 0.0}
     offset = _load_offset(offset_path)
     print("Telegram-бот запущен. Остановить: Ctrl+C.", flush=True)
     try:
@@ -1768,20 +1976,21 @@ def run_bot(config: AppConfig) -> None:
                 scheduler.schedule = load_schedule_settings(
                     config.schedule, schedule_settings_path(config.database_path)
                 )
+                freelance_scheduler.schedule = load_schedule_settings(
+                    ScheduleConfig(False, config.schedule.time, config.schedule.timezone),
+                    freelance_schedule_settings_path(config.database_path),
+                )
             except ConfigError as exc:
                 print(f"Расписание недоступно: {exc}", flush=True)
-            due_day = scheduler.due()
-            if due_day:
-                scheduler.mark(due_day)
-                if config.telegram.allowed_user_ids:
-                    owner, *others = config.telegram.allowed_user_ids
-                    try:
-                        result = bot.scan(owner)
-                        if result is not None:
-                            for user_id in others:
-                                bot.scan(user_id, result=result)
-                    except (TelegramApiError, OSError, ValueError) as exc:
-                        print(f"Ежедневный поиск не удался: {exc}", flush=True)
+            current = time.monotonic()
+            retry_at["job"] = _run_due_scan(
+                bot, scheduler, "job", config.telegram.allowed_user_ids,
+                scheduler.due(), retry_at["job"], current,
+            )
+            retry_at["freelance"] = _run_due_scan(
+                bot, freelance_scheduler, "freelance", config.telegram.allowed_user_ids,
+                freelance_scheduler.due(), retry_at["freelance"], current,
+            )
             try:
                 updates = api.get_updates(offset)
             except TelegramApiError as exc:

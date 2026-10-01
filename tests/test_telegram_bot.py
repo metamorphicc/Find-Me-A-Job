@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from job_search_automation.config import (
     AppConfig,
@@ -87,6 +88,29 @@ class FakeApi:
 
     def send_photo(self, chat_id, path) -> None:
         self.photos.append((chat_id, path))
+
+
+def test_borderline_order_can_be_reviewed_and_promoted(tmp_path) -> None:
+    settings = config(tmp_path)
+    candidate = replace(
+        vacancy("42"), source="freelancer", kind="freelance", market="global",
+        title="Build CRM", company="Client", categories=("software",),
+        published_at=datetime.now(UTC).isoformat(),
+    )
+    with VacancyStore(settings.database_path) as store:
+        store.save_review_candidates([(candidate, "title and description do not mention the selected stack")])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.show_review_candidates(42, 0)
+    card = api.messages[-1]
+    assert "https://hh.ru/vacancy/42" in card[1]
+    assert card[2]["inline_keyboard"][0][0]["callback_data"] == "fvote:yes:freelancer:42"
+
+    bot.handle_update(callback("fvote:yes:freelancer:42"))
+    with VacancyStore(settings.database_path) as store:
+        assert store.review_candidates() == []
+        assert store.get_vacancy("freelancer", "42") is not None
 
 
 def message(text: str, user_id: int = 42) -> dict:
@@ -402,6 +426,29 @@ def test_bot_edits_precise_search_filters(tmp_path) -> None:
     assert saved.excluded_title_keywords == ("QA", "DevOps")
     assert saved.salary_min == 100000
     assert saved.salary_required is True
+
+
+def test_bot_edits_freelance_budget_without_changing_job_salary(tmp_path) -> None:
+    bot = JobTelegramBot(config(tmp_path), FakeApi())
+    bot.handle_update(callback("edit:freelance:budget_min"))
+    bot.handle_update(message("500"))
+    bot.handle_update(callback("fset:budget_currency:EUR"))
+    assert bot._freelance_settings().budget_min == 500
+    assert bot._freelance_settings().budget_currency == "EUR"
+    assert bot._search_settings().salary_min is None
+    bot.handle_update(callback("edit:freelance:budget_min"))
+    bot.handle_update(message("-"))
+    assert bot._freelance_settings().budget_min is None
+
+
+def test_freelance_schedule_is_separate_from_job_schedule(tmp_path) -> None:
+    bot = JobTelegramBot(config(tmp_path), FakeApi())
+    bot.handle_update(callback("toggle:freelance_schedule"))
+    bot.handle_update(callback("edit:freelance_schedule:time"))
+    bot.handle_update(message("10:30"))
+    assert bot._schedule_settings("freelance").enabled
+    assert bot._schedule_settings("freelance").time == "10:30"
+    assert not bot._schedule_settings("job").enabled
 
 
 def test_settings_back_returns_to_main_menu(tmp_path) -> None:

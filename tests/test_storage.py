@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from job_search_automation.models import Vacancy
@@ -30,6 +32,24 @@ def test_existing_vacancy_is_not_reported_as_new_twice(tmp_path) -> None:
         assert store.save([sample()]) == [sample()]
         assert store.save([sample()]) == []
         assert len(store.recent()) == 1
+
+
+def test_review_feedback_reorders_only_pending_candidates(tmp_path) -> None:
+    with VacancyStore(tmp_path / "jobs.db") as store:
+        items = [
+            replace(sample(), source="freelancer", source_id=str(index),
+                    title=title, kind="freelance", categories=("software",))
+            for index, title in enumerate(
+                ("Build CRM module", "Create CRM plugin", "Build CRM dashboard",
+                 "Create inventory dashboard"), start=1
+            )
+        ]
+        store.save_review_candidates((item, "stack missing") for item in items)
+        assert store.rate_review_candidate("freelancer", "1", relevant=True)
+        assert store.rate_review_candidate("freelancer", "2", relevant=True)
+        assert [item.source_id for item, _ in store.review_candidates()] == ["3", "4"]
+        assert store.rate_review_candidate("freelancer", "3", relevant=False)
+        assert [item.source_id for item, _ in store.review_candidates()] == ["4"]
 
 
 def test_application_status_prevents_duplicate_or_ambiguous_retry(tmp_path) -> None:

@@ -68,10 +68,26 @@ def test_public_projects_use_skill_filter_and_keep_client_country():
     assert items[0].kind == "freelance"
     assert items[0].location_scope == "Ukraine"
     assert items[0].pay_label == "12000 UAH"
+    assert (items[0].budget_max, items[0].budget_currency, items[0].budget_unit) == (
+        12000.0, "UAH", "project"
+    )
     assert items[0].url == "https://freelancehunt.com/project/bot/1655813.html"
     assert rejection_reason(items[0], settings()) is None
     assert session.calls[0][1]["params"]["filter[skill_id]"]
     assert session.calls[1][1]["params"]["page[number]"] == 2
+
+
+def test_freelancehunt_does_not_stop_at_raw_result_limit():
+    second = project()
+    second["id"] = 1655814
+    session = Session([
+        Response({"data": [project()], "links": {"next": "page 2"}}),
+        Response({"data": [second], "links": {}}),
+    ])
+    client = FreelancehuntClient(session)
+    items = client.search(replace(settings(), per_query=1))
+    assert [item.source_id for item in items] == ["1655813", "1655814"]
+    assert client.last_pages == 2
 
 
 def test_closed_old_personal_and_vacancy_listings_are_skipped():

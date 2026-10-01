@@ -182,3 +182,25 @@ def test_freelance_skill_tags_need_implementation_context():
     assert rejection_reason(replace(base, title="WordPress API design"), focused) == (
         "title contains an excluded role"
     )
+
+
+def test_project_budget_filter_keeps_currency_and_unit_separate():
+    focused = replace(freelance_search_defaults(settings()), budget_min=500, budget_currency="USD")
+    project = replace(
+        vacancy("REMOTE"), source="freelancer", kind="freelance",
+        title="Build Python API", categories=("software",),
+        budget_max=600, budget_currency="USD", budget_unit="project",
+    )
+    assert rejection_reason(project, focused) is None
+    assert rejection_reason(replace(project, budget_max=400), focused) == (
+        "project budget below minimum"
+    )
+    assert rejection_reason(replace(project, budget_currency="UAH"), focused) == (
+        "project budget currency differs"
+    )
+    assert rejection_reason(replace(project, budget_unit="hour"), focused) == (
+        "hourly rate is not a project budget"
+    )
+    assert rejection_reason(replace(project, budget_max=None), focused) == (
+        "project budget not specified"
+    )
