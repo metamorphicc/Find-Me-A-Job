@@ -57,7 +57,7 @@ from job_search_automation.reply_templates import (
 )
 from job_search_automation.reporting import _salary
 from job_search_automation.scheduling import DailyScheduler
-from job_search_automation.search import ScanResult, SearchError, scan_vacancies
+from job_search_automation.search import ScanResult, SearchError, SourceStats, scan_vacancies
 from job_search_automation.storage import ApplicationStateError, VacancyStore
 from job_search_automation.tilda_apply import FillError
 
@@ -106,6 +106,36 @@ SOURCE_LABELS = {
     "freelancer": "Freelancer.com",
     "freelancehunt": "Freelancehunt",
 }
+
+REJECTION_LABELS = {
+    "opportunity kind disabled": "другой тип",
+    "outside selected professional categories": "другая категория",
+    "outside selected HH roles": "другая роль",
+    "title contains an excluded role": "исключённая роль",
+    "title does not contain a required phrase": "неподходящее название",
+    "title and description do not mention the selected stack": "не найдена тема/технология",
+    "not remote": "не удалённо",
+    "also offers office, hybrid, or field work": "есть офисный формат",
+    "salary not specified": "нет зарплаты",
+    "salary currency differs": "другая валюта",
+    "salary below minimum": "ниже порога оплаты",
+}
+
+
+def _source_summary(stats: tuple[SourceStats, ...]) -> str:
+    lines = ["📊 Результаты по источникам:"]
+    for source in stats:
+        details = ", ".join(
+            f"{REJECTION_LABELS.get(reason, reason)}: {count}"
+            for reason, count in source.rejected[:2]
+        )
+        coverage = " · достигнут предел страниц" if source.truncated else ""
+        lines.append(
+            f"{SOURCE_LABELS.get(source.name, source.name)}: {source.fetched} найдено, "
+            f"{source.accepted} подошло ({source.pages} стр.){coverage}"
+            + (f"\n  Отсеяно: {details}" if details else "")
+        )
+    return "\n".join(lines)
 
 PROFILE_SECTIONS = {
     "basic": ("🪪 Основное", ("name", "about", "contact", "email", "phone", "city")),
@@ -1352,6 +1382,8 @@ class JobTelegramBot:
         history_items.pop(chat_id, None)
         if result.errors:
             self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
+        if result.source_stats:
+            self.api.send_message(chat_id, _source_summary(result.source_stats))
         if not result.new_items:
             self._show_card(
                 chat_id,

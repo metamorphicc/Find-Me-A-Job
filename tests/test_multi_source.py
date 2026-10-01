@@ -59,6 +59,20 @@ def test_scan_keeps_successful_sources_when_one_fails(tmp_path):
     assert [item.source for item in first.new_items] == ["remote"]
     assert second.new_items == []
     assert first.errors == ("hh: offline",)
+    assert first.source_stats[0].name == "remote"
+    assert first.source_stats[0].accepted == 1
+
+
+def test_scan_counts_rejection_reasons_by_source(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[search]\nqueries = ["Python"]\n', encoding="utf-8")
+    config = load_config(config_path)
+    config = replace(config, search=replace(config.search, sources=("hh",), categories=()))
+    irrelevant = replace(vacancy("hh"), source_id="2", title="QA tester")
+    result = scan_with_providers(config, {"hh": Provider([vacancy("hh"), irrelevant])})
+    assert result.source_stats[0].fetched == 2
+    assert result.source_stats[0].accepted == 1
+    assert result.source_stats[0].rejected == (("title contains an excluded role", 1),)
 
 
 def test_scan_reports_all_failed_sources(tmp_path):

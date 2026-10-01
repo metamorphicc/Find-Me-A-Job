@@ -17,6 +17,7 @@ class FreelancerClient:
 
     last_transport = "api"
     endpoint = "https://www.freelancer.com/api/projects/0.1/projects/active/"
+    max_pages = 5
 
     def __init__(self, session: requests.Session | None = None) -> None:
         self.session = session or requests.Session()
@@ -24,43 +25,49 @@ class FreelancerClient:
     def search(self, settings: SearchConfig) -> list[Vacancy]:
         found: dict[str, Vacancy] = {}
         cutoff = datetime.now(UTC) - timedelta(days=settings.days)
+        self.last_pages = 0
+        self.last_truncated = False
         for query in ("",) if settings.categories else settings.queries:
-            params: dict[str, object] = {
-                "limit": min(settings.per_query, 100),
-                "sort_field": "time_updated",
-                "sort_order": "desc",
-            }
-            if settings.categories:
-                params["jobs[]"] = freelancer_job_ids(settings.categories)
-                params["job_details"] = "true"
-            else:
-                params["query"] = query
-            try:
-                response = self.session.get(
-                    self.endpoint,
-                    params=params,
-                    timeout=25,
-                )
-                response.raise_for_status()
-                payload = response.json()
-            except (requests.RequestException, ValueError) as exc:
-                raise SourceError("Freelancer.com API недоступен") from exc
-            if not isinstance(payload, dict) or payload.get("status") != "success":
-                raise SourceError("Freelancer.com вернул ошибку")
-            result = payload.get("result")
-            projects = result.get("projects") if isinstance(result, dict) else None
-            if not isinstance(projects, list):
-                raise SourceError("Freelancer.com вернул неожиданный формат")
-            for project in projects:
-                vacancy = vacancy_from_project(project, query, cutoff)
-                if vacancy is not None and (
-                    not settings.categories
-                    or set(vacancy.categories).intersection(settings.categories)
-                ) and (
-                    not settings.title_keywords
-                    or any(word.casefold() in vacancy.title.casefold() for word in settings.title_keywords)
-                ):
-                    found[vacancy.source_id] = vacancy
+            page_size = min(settings.per_query, 100)
+            for page in range(self.max_pages):
+                params: dict[str, object] = {
+                    "limit": page_size,
+                    "offset": page * page_size,
+                    "sort_field": "time_updated",
+                    "sort_order": "desc",
+                }
+                if settings.categories:
+                    params["jobs[]"] = freelancer_job_ids(settings.categories)
+                    params["job_details"] = "true"
+                else:
+                    params["query"] = query
+                try:
+                    response = self.session.get(self.endpoint, params=params, timeout=25)
+                    response.raise_for_status()
+                    payload = response.json()
+                except (requests.RequestException, ValueError) as exc:
+                    raise SourceError("Freelancer.com API недоступен") from exc
+                if not isinstance(payload, dict) or payload.get("status") != "success":
+                    raise SourceError("Freelancer.com вернул ошибку")
+                result = payload.get("result")
+                projects = result.get("projects") if isinstance(result, dict) else None
+                if not isinstance(projects, list):
+                    raise SourceError("Freelancer.com вернул неожиданный формат")
+                self.last_pages += 1
+                for project in projects:
+                    vacancy = vacancy_from_project(project, query, cutoff)
+                    if vacancy is not None and (
+                        not settings.categories
+                        or set(vacancy.categories).intersection(settings.categories)
+                    ) and (
+                        not settings.title_keywords
+                        or any(word.casefold() in vacancy.title.casefold() for word in settings.title_keywords)
+                    ):
+                        found[vacancy.source_id] = vacancy
+                if len(projects) < page_size:
+                    break
+                if page == self.max_pages - 1:
+                    self.last_truncated = True
         return list(found.values())
 
 

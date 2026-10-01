@@ -51,6 +51,17 @@ def _scan(config_path: Path, *, open_report: bool) -> int:
                 "new": len(result.new_items),
                 "transport": result.transport,
                 "errors": result.errors,
+                "sources": [
+                    {
+                        "name": source.name,
+                        "fetched": source.fetched,
+                        "accepted": source.accepted,
+                        "rejected": dict(source.rejected),
+                        "pages": source.pages,
+                        "truncated": source.truncated,
+                    }
+                    for source in result.source_stats
+                ],
                 "report": str(markdown),
                 "report_html": str(report_html),
                 "data": str(data),

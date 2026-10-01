@@ -91,3 +91,27 @@ def test_freelancer_category_mode_requests_taxonomy_jobs():
     assert "query" not in session.params[0]
     assert 13 in session.params[0]["jobs[]"]
     assert "Навыки: Python" in items[0].summary
+
+
+def test_freelancer_pages_beyond_first_batch():
+    class PagedSession:
+        def __init__(self):
+            self.params = []
+
+        def get(self, _url, *, params, timeout):
+            self.params.append(params)
+            offset = params["offset"]
+            items = (
+                [project(id=1), project(id=2)] if offset == 0
+                else [project(id=3)]
+            )
+            return Response({"status": "success", "result": {"projects": items}})
+
+    session = PagedSession()
+    client = FreelancerClient(session)
+    focused = SearchConfig(("Python",), (), (), (), True, True, 7, 2)
+    items = client.search(focused)
+    assert [item.source_id for item in items] == ["1", "2", "3"]
+    assert [params["offset"] for params in session.params] == [0, 2]
+    assert client.last_pages == 2
+    assert not client.last_truncated

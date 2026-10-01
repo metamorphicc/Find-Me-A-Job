@@ -74,6 +74,19 @@ def test_public_projects_use_skill_filter_and_keep_client_country():
     assert session.calls[1][1]["params"]["page[number]"] == 2
 
 
+def test_freelancehunt_does_not_stop_at_raw_result_limit():
+    second = project()
+    second["id"] = 1655814
+    session = Session([
+        Response({"data": [project()], "links": {"next": "page 2"}}),
+        Response({"data": [second], "links": {}}),
+    ])
+    client = FreelancehuntClient(session)
+    items = client.search(replace(settings(), per_query=1))
+    assert [item.source_id for item in items] == ["1655813", "1655814"]
+    assert client.last_pages == 2
+
+
 def test_closed_old_personal_and_vacancy_listings_are_skipped():
     cutoff = datetime.now(UTC) - timedelta(days=7)
     assert vacancy_from_project(project(status={"id": 21}), cutoff) is None

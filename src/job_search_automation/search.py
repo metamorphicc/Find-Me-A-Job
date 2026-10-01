@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -19,12 +20,23 @@ from job_search_automation.superjob import SuperJobClient
 
 
 @dataclass(frozen=True, slots=True)
+class SourceStats:
+    name: str
+    fetched: int
+    accepted: int
+    rejected: tuple[tuple[str, int], ...]
+    pages: int = 1
+    truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ScanResult:
     new_items: list[Vacancy]
     fetched_count: int
     accepted_count: int
     transport: str
     errors: tuple[str, ...] = ()
+    source_stats: tuple[SourceStats, ...] = ()
 
 
 class SearchProvider(Protocol):
@@ -66,6 +78,7 @@ def scan_with_providers(
     fetched: list[Vacancy] = []
     transports: list[str] = []
     errors: list[str] = []
+    stats: list[SourceStats] = []
     for name in requested:
         client = providers[name]
         try:
@@ -75,10 +88,21 @@ def scan_with_providers(
             continue
         fetched.extend(items)
         transports.append(f"{name}:{client.last_transport}")
+        reasons = Counter(reason for item in items if (reason := rejection_reason(item, config.search)))
+        stats.append(SourceStats(
+            name=name,
+            fetched=len(items),
+            accepted=len(items) - sum(reasons.values()),
+            rejected=tuple(reasons.most_common()),
+            pages=getattr(client, "last_pages", 1),
+            truncated=getattr(client, "last_truncated", False),
+        ))
     if not transports:
         raise SearchError("Все источники недоступны: " + "; ".join(errors))
 
     accepted = [item for item in fetched if rejection_reason(item, config.search) is None]
     with VacancyStore(config.database_path) as store:
         new_items = store.save(accepted)
-    return ScanResult(new_items, len(fetched), len(accepted), ", ".join(transports), tuple(errors))
+    return ScanResult(
+        new_items, len(fetched), len(accepted), ", ".join(transports), tuple(errors), tuple(stats)
+    )

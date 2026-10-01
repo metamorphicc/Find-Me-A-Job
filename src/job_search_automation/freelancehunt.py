@@ -20,6 +20,7 @@ class FreelancehuntClient:
 
     last_transport = "api"
     endpoint = "https://api.freelancehunt.com/v2/projects"
+    max_pages = 10
 
     def __init__(self, session: requests.Session | None = None) -> None:
         self.session = session or requests.Session()
@@ -27,7 +28,9 @@ class FreelancehuntClient:
     def search(self, settings: SearchConfig) -> list[Vacancy]:
         cutoff = datetime.now(UTC) - timedelta(days=settings.days)
         found: dict[str, Vacancy] = {}
-        for page in range(1, 11):
+        self.last_pages = 0
+        self.last_truncated = False
+        for page in range(1, self.max_pages + 1):
             try:
                 response = self.session.get(
                     self.endpoint,
@@ -44,20 +47,19 @@ class FreelancehuntClient:
                 raise SourceError("Freelancehunt API недоступен") from exc
             if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
                 raise SourceError("Freelancehunt вернул неожиданный формат")
+            self.last_pages += 1
             projects = payload["data"]
             for project in projects:
                 vacancy = vacancy_from_project(project, cutoff)
                 if vacancy is not None:
                     found[vacancy.source_id] = vacancy
             links = payload.get("links")
-            if (
-                len(found) >= settings.per_query
-                or not projects
-                or not isinstance(links, dict)
-                or not links.get("next")
-            ):
+            has_next = isinstance(links, dict) and bool(links.get("next"))
+            if not projects or not has_next:
                 break
-        return list(found.values())[:settings.per_query]
+            if page == self.max_pages:
+                self.last_truncated = True
+        return list(found.values())
 
 
 def vacancy_from_project(item: Any, cutoff: datetime) -> Vacancy | None:
