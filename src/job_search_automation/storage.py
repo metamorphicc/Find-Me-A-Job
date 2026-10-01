@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,7 +42,31 @@ CREATE TABLE IF NOT EXISTS applications (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (source, source_id)
 );
+CREATE TABLE IF NOT EXISTS review_candidates (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    feedback TEXT CHECK(feedback IN ('relevant', 'irrelevant')),
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (source, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_review_candidates_seen
+    ON review_candidates(last_seen DESC);
 """
+
+_GENERIC_TITLE_WORDS = {
+    "build", "create", "develop", "need", "help", "with", "for", "the",
+    "разработать", "создать", "нужно", "помощь", "сделать", "для",
+}
+
+
+def _title_terms(title: str) -> set[str]:
+    return {
+        term for term in re.findall(r"\b\w{3,}\b", title.casefold())
+        if term not in _GENERIC_TITLE_WORDS and not term.isdigit()
+    }
 
 
 class ApplicationStateError(ValueError):
@@ -171,6 +197,64 @@ class VacancyStore:
             (source, source_id),
         ).fetchone()
         return Vacancy.from_dict(json.loads(row["payload_json"])) if row else None
+
+    def save_review_candidates(self, candidates: Iterable[tuple[Vacancy, str]]) -> None:
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.connection:
+            for vacancy, reason in candidates:
+                self.connection.execute(
+                    """INSERT INTO review_candidates
+                       (source, source_id, payload_json, reason, first_seen, last_seen)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(source, source_id) DO UPDATE SET
+                           payload_json = excluded.payload_json,
+                           reason = excluded.reason,
+                           last_seen = excluded.last_seen""",
+                    (vacancy.source, vacancy.source_id,
+                     json.dumps(vacancy.to_dict(), ensure_ascii=False), reason, now, now),
+                )
+
+    def review_candidates(self, limit: int = 100) -> list[tuple[Vacancy, str]]:
+        rows = self.connection.execute(
+            """SELECT c.payload_json, c.reason FROM review_candidates c
+               WHERE c.feedback IS NULL AND NOT EXISTS (
+                   SELECT 1 FROM vacancies v
+                   WHERE v.source = c.source AND v.source_id = c.source_id
+               ) ORDER BY c.last_seen DESC, c.source_id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        feedback = Counter()
+        for rated in self.connection.execute(
+            "SELECT payload_json, feedback FROM review_candidates WHERE feedback IS NOT NULL"
+        ):
+            title = Vacancy.from_dict(json.loads(rated["payload_json"])).title
+            direction = 1 if rated["feedback"] == "relevant" else -1
+            for term in _title_terms(title):
+                feedback[term] += direction
+        items = [(Vacancy.from_dict(json.loads(row["payload_json"])), row["reason"])
+                 for row in rows]
+        # Feedback only reorders the review queue. It never silently widens strict matches.
+        return sorted(
+            items,
+            key=lambda pair: sum(feedback[term] for term in _title_terms(pair[0].title)),
+            reverse=True,
+        )
+
+    def rate_review_candidate(self, source: str, source_id: str, relevant: bool) -> bool:
+        row = self.connection.execute(
+            "SELECT payload_json FROM review_candidates WHERE source = ? AND source_id = ? "
+            "AND feedback IS NULL", (source, source_id)
+        ).fetchone()
+        if row is None:
+            return False
+        if relevant:
+            self.save([Vacancy.from_dict(json.loads(row["payload_json"]))])
+        with self.connection:
+            self.connection.execute(
+                "UPDATE review_candidates SET feedback = ? WHERE source = ? AND source_id = ?",
+                ("relevant" if relevant else "irrelevant", source, source_id),
+            )
+        return True
 
     def count(self) -> int:
         row = self.connection.execute(

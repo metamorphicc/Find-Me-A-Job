@@ -7,6 +7,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -372,17 +373,22 @@ class JobTelegramBot:
             "Страна заказчика не ограничивает поиск; возможность отклика уточняйте на площадке."
             if kind == "freelance" else "Фильтры вакансий не влияют на поиск заказов."
         )
+        buttons = [
+            [{"text": f"🔎 Искать {label}", "callback_data": f"scan:{kind}"}],
+            [{"text": "📚 Ранее найденные", "callback_data":
+              "fhistory:0" if kind == "freelance" else "history:0"}],
+        ]
+        if kind == "freelance":
+            buttons.append([{"text": "🟡 Возможно подходят", "callback_data": "fcandidates:0"}])
+        buttons.extend([
+            [{"text": "⚙️ Фильтры заказов" if kind == "freelance" else "⚙️ Фильтры вакансий",
+              "callback_data": "settings:freelance" if kind == "freelance" else "settings:search"}],
+            [{"text": "← Главное меню", "callback_data": "menu:main"}],
+        ])
         self.api.send_message(
             chat_id, f"{'🧩' if kind == 'freelance' else '💼'} Поиск: {label}\n"
             f"Источники: {sources}.\n{note}",
-            reply_markup={"inline_keyboard": [
-                [{"text": f"🔎 Искать {label}", "callback_data": f"scan:{kind}"}],
-                [{"text": "📚 Ранее найденные", "callback_data":
-                  "fhistory:0" if kind == "freelance" else "history:0"}],
-                [{"text": "⚙️ Фильтры заказов" if kind == "freelance" else "⚙️ Фильтры вакансий",
-                  "callback_data": "settings:freelance" if kind == "freelance" else "settings:search"}],
-                [{"text": "← Главное меню", "callback_data": "menu:main"}],
-            ]},
+            reply_markup={"inline_keyboard": buttons},
         )
 
     def show_freelance_settings(self, chat_id: int) -> None:
@@ -1256,6 +1262,22 @@ class JobTelegramBot:
             elif action.startswith("fhistory:") and action[9:].isdigit() and len(action) <= 15:
                 self.profile_setup.discard(chat_id)
                 self.show_history(chat_id, int(action[9:]), kind="freelance", message_id=message_id)
+            elif action.startswith("fcandidates:") and action[12:].isdigit() and len(action) <= 18:
+                self.show_review_candidates(chat_id, int(action[12:]), message_id=message_id)
+            elif action.startswith("fvote:"):
+                parts = action.split(":")
+                if len(parts) == 4 and parts[1] in {"yes", "no"} and _callback_ref(parts[2], parts[3]):
+                    with VacancyStore(self.config.database_path) as store:
+                        updated = store.rate_review_candidate(
+                            parts[2], parts[3], parts[1] == "yes"
+                        )
+                    if updated:
+                        self.api.send_message(
+                            chat_id,
+                            "Добавил заказ в историю — там доступен шаблон отклика."
+                            if parts[1] == "yes" else "Убрал заказ из очереди.",
+                        )
+                        self.show_review_candidates(chat_id, 0, message_id=message_id)
             elif action == "menu:main":
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
@@ -1383,7 +1405,10 @@ class JobTelegramBot:
         if result.errors:
             self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
         if result.source_stats:
-            self.api.send_message(chat_id, _source_summary(result.source_stats))
+            summary = _source_summary(result.source_stats)
+            if kind == "freelance" and result.review_items:
+                summary += f"\n🟡 На ручную проверку: {len(result.review_items)}"
+            self.api.send_message(chat_id, summary)
         if not result.new_items:
             self._show_card(
                 chat_id,
@@ -1393,7 +1418,9 @@ class JobTelegramBot:
                 reply_markup={
                     "inline_keyboard": [
                         [{"text": "📚 Посмотреть найденные", "callback_data":
-                          "fhistory:0" if kind == "freelance" else "history:0"}]
+                          "fhistory:0" if kind == "freelance" else "history:0"}],
+                        *([[{"text": "🟡 Возможно подходят", "callback_data": "fcandidates:0"}]]
+                          if kind == "freelance" else []),
                     ]
                 },
                 message_id=progress_id,
@@ -1712,9 +1739,66 @@ class JobTelegramBot:
         markup["inline_keyboard"].append(
             [{"text": "📚 Ранее найденные", "callback_data": f"{history_prefix}:0"}]
         )
+        if kind == "freelance":
+            markup["inline_keyboard"].append(
+                [{"text": "🟡 Возможно подходят", "callback_data": "fcandidates:0"}]
+            )
         self._show_card(
             chat_id, vacancy_message(vacancy, page + 1, len(items)),
             reply_markup=markup, html_mode=True, message_id=message_id,
+        )
+
+    def show_review_candidates(
+        self, chat_id: int, page: int, *, message_id: int | None = None
+    ) -> None:
+        try:
+            settings = self._freelance_settings()
+        except ConfigError as exc:
+            self._show_card(chat_id, f"Не удалось прочитать фильтры: {exc}", message_id=message_id)
+            return
+        cutoff = datetime.now(UTC) - timedelta(days=settings.days)
+        with VacancyStore(self.config.database_path) as store:
+            stored = store.review_candidates(200)
+        candidates = []
+        for item, reason in stored:
+            if item.source not in settings.sources:
+                continue
+            try:
+                published = datetime.fromisoformat(item.published_at)
+            except ValueError:
+                continue
+            if published.tzinfo is None or published < cutoff:
+                continue
+            candidates.append((item, reason))
+        if not candidates:
+            self._show_card(
+                chat_id,
+                "Пограничных заказов пока нет. Запустите поиск заказов.",
+                reply_markup={"inline_keyboard": [[
+                    {"text": "← К заказам", "callback_data": "menu:freelance"}
+                ]]},
+                message_id=message_id,
+            )
+            return
+        page = min(page, len(candidates) - 1)
+        item, _ = candidates[page]
+        buttons = [
+            [{"text": "👍 Подходит", "callback_data": f"fvote:yes:{item.source}:{item.source_id}"},
+             {"text": "👎 Мимо", "callback_data": f"fvote:no:{item.source}:{item.source_id}"}],
+        ]
+        arrows = []
+        if page > 0:
+            arrows.append({"text": "←", "callback_data": f"fcandidates:{page - 1}"})
+        if page + 1 < len(candidates):
+            arrows.append({"text": "→", "callback_data": f"fcandidates:{page + 1}"})
+        if arrows:
+            buttons.append(arrows)
+        buttons.append([{"text": "← К заказам", "callback_data": "menu:freelance"}])
+        self._show_card(
+            chat_id,
+            vacancy_message(item, page + 1, len(candidates))
+            + "\n\n🟡 Тема из фильтра не найдена, но название похоже на задачу по разработке.",
+            reply_markup={"inline_keyboard": buttons}, html_mode=True, message_id=message_id,
         )
 
     def show_history(

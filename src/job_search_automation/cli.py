@@ -49,6 +49,7 @@ def _scan(config_path: Path, *, open_report: bool) -> int:
                 "fetched": result.fetched_count,
                 "accepted": result.accepted_count,
                 "new": len(result.new_items),
+                "review": len(result.review_items),
                 "transport": result.transport,
                 "errors": result.errors,
                 "sources": [

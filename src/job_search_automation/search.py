@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import requests
@@ -37,6 +38,7 @@ class ScanResult:
     transport: str
     errors: tuple[str, ...] = ()
     source_stats: tuple[SourceStats, ...] = ()
+    review_items: list[tuple[Vacancy, str]] = field(default_factory=list)
 
 
 class SearchProvider(Protocol):
@@ -47,6 +49,24 @@ class SearchProvider(Protocol):
 
 class SearchError(RuntimeError):
     """Raised when no configured source can be searched."""
+
+
+_IMPLEMENTATION_TITLE = re.compile(
+    r"\b(?:build|develop|implement|integrat\w*|automat\w*|code|script|"
+    r"api|backend|frontend|website|web app|saas|agent|bot|crm|"
+    r"разработ\w*|созда\w*|напис\w*|интегр\w*|автоматиз\w*|бот|"
+    r"розроб\w*|створ\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _reviewable(vacancy: Vacancy, reason: str | None) -> bool:
+    return (
+        vacancy.kind == "freelance"
+        and reason == "title and description do not mention the selected stack"
+        and "software" in vacancy.categories
+        and bool(_IMPLEMENTATION_TITLE.search(vacancy.title))
+    )
 
 
 def build_providers(config: AppConfig) -> dict[str, SearchProvider]:
@@ -79,6 +99,7 @@ def scan_with_providers(
     transports: list[str] = []
     errors: list[str] = []
     stats: list[SourceStats] = []
+    review_items: list[tuple[Vacancy, str]] = []
     for name in requested:
         client = providers[name]
         try:
@@ -88,7 +109,12 @@ def scan_with_providers(
             continue
         fetched.extend(items)
         transports.append(f"{name}:{client.last_transport}")
-        reasons = Counter(reason for item in items if (reason := rejection_reason(item, config.search)))
+        decisions = [(item, rejection_reason(item, config.search)) for item in items]
+        reasons = Counter(reason for _, reason in decisions if reason)
+        review_items.extend(
+            (item, reason) for item, reason in decisions
+            if reason is not None and _reviewable(item, reason)
+        )
         stats.append(SourceStats(
             name=name,
             fetched=len(items),
@@ -103,6 +129,8 @@ def scan_with_providers(
     accepted = [item for item in fetched if rejection_reason(item, config.search) is None]
     with VacancyStore(config.database_path) as store:
         new_items = store.save(accepted)
+        store.save_review_candidates(review_items)
     return ScanResult(
-        new_items, len(fetched), len(accepted), ", ".join(transports), tuple(errors), tuple(stats)
+        new_items, len(fetched), len(accepted), ", ".join(transports), tuple(errors),
+        tuple(stats), review_items,
     )

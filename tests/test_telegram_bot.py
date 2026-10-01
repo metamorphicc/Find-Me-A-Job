@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from job_search_automation.config import (
     AppConfig,
@@ -87,6 +88,29 @@ class FakeApi:
 
     def send_photo(self, chat_id, path) -> None:
         self.photos.append((chat_id, path))
+
+
+def test_borderline_order_can_be_reviewed_and_promoted(tmp_path) -> None:
+    settings = config(tmp_path)
+    candidate = replace(
+        vacancy("42"), source="freelancer", kind="freelance", market="global",
+        title="Build CRM", company="Client", categories=("software",),
+        published_at=datetime.now(UTC).isoformat(),
+    )
+    with VacancyStore(settings.database_path) as store:
+        store.save_review_candidates([(candidate, "title and description do not mention the selected stack")])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+
+    bot.show_review_candidates(42, 0)
+    card = api.messages[-1]
+    assert "https://hh.ru/vacancy/42" in card[1]
+    assert card[2]["inline_keyboard"][0][0]["callback_data"] == "fvote:yes:freelancer:42"
+
+    bot.handle_update(callback("fvote:yes:freelancer:42"))
+    with VacancyStore(settings.database_path) as store:
+        assert store.review_candidates() == []
+        assert store.get_vacancy("freelancer", "42") is not None
 
 
 def message(text: str, user_id: int = 42) -> dict:
