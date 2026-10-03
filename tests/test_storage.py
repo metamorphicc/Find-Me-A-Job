@@ -52,6 +52,28 @@ def test_review_feedback_reorders_only_pending_candidates(tmp_path) -> None:
         assert [item.source_id for item, _ in store.review_candidates()] == ["4"]
 
 
+def test_regular_order_feedback_ranks_future_matches_and_can_be_changed(tmp_path) -> None:
+    crm = replace(sample(), source="freelancer", source_id="crm", kind="freelance",
+                  title="CRM integration", published_at="2026-09-20T00:00:00+00:00")
+    newer_crm = replace(crm, source_id="crm-new",
+                        published_at="2026-09-22T00:00:00+00:00")
+    parser = replace(crm, source_id="parser", title="Inventory parser",
+                     published_at="2026-09-23T00:00:00+00:00")
+    with VacancyStore(tmp_path / "jobs.db") as store:
+        store.save([sample(), crm, newer_crm, parser])
+        assert not store.rate_freelance("hh", "123", relevant=True)
+        assert store.rate_freelance("freelancer", "crm", relevant=True)
+        assert store.freelance_feedback("freelancer", "crm") == "relevant"
+        assert [item.source_id for item in store.rank_freelance([parser, newer_crm])] == [
+            "crm-new", "parser"
+        ]
+        assert store.rate_freelance("freelancer", "crm", relevant=False)
+        assert store.freelance_feedback("freelancer", "crm") == "irrelevant"
+        assert [item.source_id for item in store.rank_freelance([parser, newer_crm])] == [
+            "parser", "crm-new"
+        ]
+
+
 def test_application_status_prevents_duplicate_or_ambiguous_retry(tmp_path) -> None:
     with VacancyStore(tmp_path / "jobs.db") as store:
         store.save([sample()])
