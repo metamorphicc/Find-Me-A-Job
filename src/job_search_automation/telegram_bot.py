@@ -1878,8 +1878,13 @@ class JobTelegramBot:
                 return
             with VacancyStore(self.config.database_path) as store:
                 all_items = store.recent_vacancies(store.count())
+                promoted = store.promoted_review_keys() if kind == "freelance" else set()
             history_items[chat_id] = [
-                item for item in all_items if rejection_reason(item, settings) is None
+                item for item in all_items
+                if rejection_reason(item, settings) is None or (
+                    (item.source, item.source_id) in promoted
+                    and rejection_reason(item, replace(settings, stack_keywords=())) is None
+                )
             ]
         matches = history_items[chat_id]
         total = len(matches)

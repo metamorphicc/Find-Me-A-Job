@@ -12,6 +12,7 @@ from job_search_automation.config import (
     save_search_settings,
     search_settings_path,
 )
+from job_search_automation.filters import rejection_reason
 from job_search_automation.models import Vacancy
 from job_search_automation.reply_templates import load_templates, templates_path
 from job_search_automation.search import ScanResult
@@ -95,12 +96,15 @@ def test_borderline_order_can_be_reviewed_and_promoted(tmp_path) -> None:
     candidate = replace(
         vacancy("42"), source="freelancer", kind="freelance", market="global",
         title="Build CRM", company="Client", categories=("software",),
-        published_at=datetime.now(UTC).isoformat(),
+        published_at=datetime.now(UTC).isoformat(), summary="",
     )
     with VacancyStore(settings.database_path) as store:
         store.save_review_candidates([(candidate, "title and description do not mention the selected stack")])
     api = FakeApi()
     bot = JobTelegramBot(settings, api)
+    assert rejection_reason(candidate, bot._freelance_settings()) == (
+        "title and description do not mention the selected stack"
+    )
 
     bot.show_review_candidates(42, 0)
     card = api.messages[-1]
@@ -111,6 +115,9 @@ def test_borderline_order_can_be_reviewed_and_promoted(tmp_path) -> None:
     with VacancyStore(settings.database_path) as store:
         assert store.review_candidates() == []
         assert store.get_vacancy("freelancer", "42") is not None
+
+    bot.show_history(42, 0, kind="freelance")
+    assert "Build CRM" in api.messages[-1][1]
 
 
 def message(text: str, user_id: int = 42) -> dict:

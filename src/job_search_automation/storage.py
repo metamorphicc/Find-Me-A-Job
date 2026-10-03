@@ -240,6 +240,12 @@ class VacancyStore:
             reverse=True,
         )
 
+    def promoted_review_keys(self) -> set[tuple[str, str]]:
+        rows = self.connection.execute(
+            "SELECT source, source_id FROM review_candidates WHERE feedback = 'relevant'"
+        )
+        return {(row["source"], row["source_id"]) for row in rows}
+
     def rate_review_candidate(self, source: str, source_id: str, relevant: bool) -> bool:
         row = self.connection.execute(
             "SELECT payload_json FROM review_candidates WHERE source = ? AND source_id = ? "
