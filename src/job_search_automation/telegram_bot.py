@@ -1299,8 +1299,9 @@ class JobTelegramBot:
             ):
                 self.api.answer_callback(callback_id, "Нет доступа")
                 return
-            self.api.answer_callback(callback_id)
             action = str(callback.get("data") or "")
+            if not action.startswith("ovote:"):
+                self.api.answer_callback(callback_id)
             message_id = (callback.get("message") or {}).get("message_id")
             if not isinstance(message_id, int):
                 message_id = None
@@ -1336,6 +1337,16 @@ class JobTelegramBot:
                             if parts[1] == "yes" else "Убрал заказ из очереди.",
                         )
                         self.show_review_candidates(chat_id, 0, message_id=message_id)
+            elif action.startswith("ovote:"):
+                parts = action.split(":")
+                if len(parts) == 4 and parts[1] in {"yes", "no"} and _callback_ref(parts[2], parts[3]):
+                    with VacancyStore(self.config.database_path) as store:
+                        updated = store.rate_freelance(parts[2], parts[3], parts[1] == "yes")
+                    self.api.answer_callback(
+                        callback_id, "Учту в следующих подборках" if updated else "Заказ не найден"
+                    )
+                else:
+                    self.api.answer_callback(callback_id, "Не удалось сохранить оценку")
             elif action == "menu:main":
                 self.pending_edits.pop(chat_id, None)
                 self.profile_setup.discard(chat_id)
@@ -1462,7 +1473,11 @@ class JobTelegramBot:
                 return None
         new_items = self.freelance_new_items if kind == "freelance" else self.new_items
         history_items = self.freelance_history_items if kind == "freelance" else self.history_items
-        new_items[chat_id] = result.new_items
+        if kind == "freelance":
+            with VacancyStore(self.config.database_path) as store:
+                new_items[chat_id] = store.rank_freelance(result.new_items)
+        else:
+            new_items[chat_id] = result.new_items
         history_items.pop(chat_id, None)
         if result.errors:
             self.api.send_message(chat_id, "Часть источников недоступна: " + "; ".join(result.errors))
@@ -1727,38 +1742,33 @@ class JobTelegramBot:
     def _reply_button(
         self, vacancy: Vacancy, profile: CandidateProfile | None
     ) -> dict[str, Any] | None:
-        if (
-            profile is None
-            or not _callback_ref(vacancy.source, vacancy.source_id)
-        ):
+        if not _callback_ref(vacancy.source, vacancy.source_id):
             return None
-        buttons = [
-            [
-                {
-                    "text": "📝 Показать отклик",
-                    "callback_data": f"replycurrent:{vacancy.source}:{vacancy.source_id}",
-                }
-            ],
-            [
-                {
-                    "text": "🔁 Другой шаблон",
-                    "callback_data": f"reply:{vacancy.source}:{vacancy.source_id}",
-                }
-            ]
-        ]
-        with VacancyStore(self.config.database_path) as store:
-            record = store.application(vacancy.source, vacancy.source_id)
-        if vacancy.kind == "job" and (
-            record is None or record.status not in {"attempted", "submitted"}
-        ):
-            buttons.append(
-                [
-                    {
-                        "text": "📄 Подготовить заявку",
-                        "callback_data": f"appprep:{vacancy.source}:{vacancy.source_id}",
-                    }
-                ]
-            )
+        buttons: list[list[dict[str, str]]] = []
+        if profile is not None:
+            buttons.extend([
+                [{"text": "📝 Показать отклик",
+                  "callback_data": f"replycurrent:{vacancy.source}:{vacancy.source_id}"}],
+                [{"text": "🔁 Другой шаблон",
+                  "callback_data": f"reply:{vacancy.source}:{vacancy.source_id}"}],
+            ])
+        if vacancy.kind == "freelance":
+            with VacancyStore(self.config.database_path) as store:
+                feedback = store.freelance_feedback(vacancy.source, vacancy.source_id)
+            buttons.append([
+                {"text": "👍 Подходит" + (" ✓" if feedback == "relevant" else ""),
+                 "callback_data": f"ovote:yes:{vacancy.source}:{vacancy.source_id}"},
+                {"text": "👎 Мимо" + (" ✓" if feedback == "irrelevant" else ""),
+                 "callback_data": f"ovote:no:{vacancy.source}:{vacancy.source_id}"},
+            ])
+        elif profile is not None:
+            with VacancyStore(self.config.database_path) as store:
+                record = store.application(vacancy.source, vacancy.source_id)
+            if record is None or record.status not in {"attempted", "submitted"}:
+                buttons.append(
+                    [{"text": "📄 Подготовить заявку",
+                      "callback_data": f"appprep:{vacancy.source}:{vacancy.source_id}"}]
+                )
         return {"inline_keyboard": buttons}
 
     def _show_card(
@@ -1879,13 +1889,18 @@ class JobTelegramBot:
             with VacancyStore(self.config.database_path) as store:
                 all_items = store.recent_vacancies(store.count())
                 promoted = store.promoted_review_keys() if kind == "freelance" else set()
-            history_items[chat_id] = [
-                item for item in all_items
-                if rejection_reason(item, settings) is None or (
-                    (item.source, item.source_id) in promoted
-                    and rejection_reason(item, replace(settings, stack_keywords=())) is None
+                matches = [
+                    item for item in all_items
+                    if item.source in settings.sources and (
+                        rejection_reason(item, settings) is None or (
+                            (item.source, item.source_id) in promoted
+                            and rejection_reason(item, replace(settings, stack_keywords=())) is None
+                        )
+                    )
+                ]
+                history_items[chat_id] = (
+                    store.rank_freelance(matches) if kind == "freelance" else matches
                 )
-            ]
         matches = history_items[chat_id]
         total = len(matches)
         if page >= total:

@@ -6,7 +6,7 @@ import sqlite3
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
 
@@ -58,6 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_review_candidates_seen
 
 _GENERIC_TITLE_WORDS = {
     "build", "create", "develop", "need", "help", "with", "for", "the",
+    "module", "plugin", "dashboard", "project", "website", "app",
     "разработать", "создать", "нужно", "помощь", "сделать", "для",
 }
 
@@ -245,6 +246,57 @@ class VacancyStore:
             "SELECT source, source_id FROM review_candidates WHERE feedback = 'relevant'"
         )
         return {(row["source"], row["source_id"]) for row in rows}
+
+    def freelance_feedback(self, source: str, source_id: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT feedback FROM review_candidates WHERE source = ? AND source_id = ?",
+            (source, source_id),
+        ).fetchone()
+        return row["feedback"] if row else None
+
+    def rate_freelance(self, source: str, source_id: str, relevant: bool) -> bool:
+        vacancy = self.get_vacancy(source, source_id)
+        if vacancy is None or vacancy.kind != "freelance":
+            return False
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO review_candidates
+                   (source, source_id, payload_json, reason, feedback, first_seen, last_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source, source_id) DO UPDATE SET
+                       payload_json = excluded.payload_json,
+                       feedback = excluded.feedback,
+                       last_seen = excluded.last_seen""",
+                (source, source_id, json.dumps(vacancy.to_dict(), ensure_ascii=False),
+                 "accepted match", "relevant" if relevant else "irrelevant", now, now),
+            )
+        return True
+
+    def rank_freelance(self, vacancies: Iterable[Vacancy]) -> list[Vacancy]:
+        weights: Counter[str] = Counter()
+        for row in self.connection.execute(
+            "SELECT payload_json, feedback FROM review_candidates WHERE feedback IS NOT NULL"
+        ):
+            rated = Vacancy.from_dict(json.loads(row["payload_json"]))
+            if rated.kind != "freelance":
+                continue
+            direction = 1 if row["feedback"] == "relevant" else -1
+            for term in _title_terms(rated.title):
+                weights[term] += direction
+
+        def key(vacancy: Vacancy) -> tuple[int, float]:
+            score = sum(weights[term] for term in _title_terms(vacancy.title))
+            try:
+                published = datetime.fromisoformat(vacancy.published_at)
+                if published.tzinfo is None:
+                    published = published.replace(tzinfo=UTC)
+                timestamp = published.timestamp()
+            except ValueError:
+                timestamp = 0.0
+            return score, timestamp
+
+        return sorted(vacancies, key=key, reverse=True)
 
     def rate_review_candidate(self, source: str, source_id: str, relevant: bool) -> bool:
         row = self.connection.execute(

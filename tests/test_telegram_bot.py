@@ -120,6 +120,28 @@ def test_borderline_order_can_be_reviewed_and_promoted(tmp_path) -> None:
     assert "Build CRM" in api.messages[-1][1]
 
 
+def test_freelance_vote_works_without_profile_and_reorders_next_scan(tmp_path) -> None:
+    settings = config(tmp_path)
+    first = replace(
+        vacancy("crm"), source="freelancer", kind="freelance", market="global",
+        title="Build Python CRM", summary="Python API", categories=("software",),
+        published_at=datetime.now(UTC).isoformat(),
+    )
+    second = replace(first, source_id="parser", title="Build Python parser")
+    with VacancyStore(settings.database_path) as store:
+        store.save([first, second])
+    api = FakeApi()
+    bot = JobTelegramBot(settings, api)
+    bot.show_history(42, 1, kind="freelance")
+    assert "ovote:yes:freelancer:crm" in str(api.messages[-1][2])
+    bot.handle_update(callback("ovote:yes:freelancer:crm"))
+    assert api.callbacks[-1] == ("callback-1", "Учту в следующих подборках")
+    with VacancyStore(settings.database_path) as store:
+        assert store.freelance_feedback("freelancer", "crm") == "relevant"
+    bot.scan(42, ScanResult([second, first], 2, 2, "api"), kind="freelance")
+    assert "Build Python CRM" in api.messages[-1][1]
+
+
 def message(text: str, user_id: int = 42) -> dict:
     return {
         "message": {
